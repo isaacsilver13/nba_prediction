@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Secrets and local configuration
+.env
+*.env
+.github_token*
+
+# NBA datasets and runtime logs
+/data/raw/
+/data/processed/
+/data/cache/
+/data/logs/
+/data/staging/
+
+# Generated model outputs and experiment artifacts
+/outputs/
+*.tsv
+
+# Keep small checked-in samples and documentation
+!/data/sample/
+!/data/sample/**
+
+# Test and tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+
+# OS/editor
+.vscode/
+.DS_Store
+Thumbs.db
