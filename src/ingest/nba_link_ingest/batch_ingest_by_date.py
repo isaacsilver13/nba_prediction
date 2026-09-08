@@ -21,7 +21,7 @@ from requests.exceptions import ReadTimeout, RequestException
 from src.ingest.nba_link_ingest import parser as box_parser
 
 
-def games_on_date(date_obj: datetime):
+def games_on_date(date_obj: datetime, allow_api: bool = True):
     # Try to use a local mapping of games -> ids if it exists
     # This avoids requiring nba_api to be installed.
     mapping = Path("data/processed/nba_games_with_game_id.csv")
@@ -42,6 +42,9 @@ def games_on_date(date_obj: datetime):
         if ids:
             return ids
         # mapping exists but no ids for this date -> fall through to API fallback
+
+    if not allow_api:
+        return []
 
     # fallback: use nba_api if installed
     try:
@@ -104,11 +107,14 @@ def _read_failed_dates(path: Path) -> set:
     for r in rows:
         if not r:
             continue
-        try:
-            # First column is date
-            dates.add(r[0])
-        except Exception:
+        value = r[0].strip()
+        if value == "date":
             continue
+        try:
+            datetime.strptime(value, "%Y-%m-%d")
+        except ValueError:
+            continue
+        dates.add(value)
     return dates
 
 
@@ -117,7 +123,7 @@ def process_date(date_obj: datetime, out_dir: Path, dry_run: bool, workers: int 
     date_str = date_obj.strftime("%Y-%m-%d")
     out_path = out_dir / f"{date_str}.json"
     try:
-        ids = games_on_date(date_obj)
+        ids = games_on_date(date_obj, allow_api=allow_api)
     except Exception as e:
         return False, 0, f"ERROR_GAMEIDS:{e}"
     num_games = len(ids)

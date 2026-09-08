@@ -30,6 +30,17 @@ from sklearn.metrics import mean_squared_error
 import lightgbm as lgb
 from xgboost import XGBRegressor
 
+"""
+NBA Prediction - Autoresearch Experiment Script
+================================================
+This is the file the AI agent modifies each iteration.
+All tunable configuration lives in the AGENT-EDITABLE CONFIG block.
+Data loading and metric calculation are FROZEN below the marked boundary.
+
+On each run, appends one row to results.tsv:
+    timestamp | exp_id | ensemble_rmse | roi | score | params
+"""
+
 import hashlib
 import io
 import json
@@ -65,7 +76,7 @@ MODEL_SPECS = [
         "id": "lgb_v1",
         "model": lgb.LGBMRegressor(
             n_estimators=1200, learning_rate=0.02, max_depth=4,
-            num_leaves=31, min_child_samples=50,
+            num_leaves=20, min_child_samples=50,
             subsample=0.8, colsample_bytree=0.8,
             random_state=42, verbose=-1,
         ),
@@ -74,8 +85,8 @@ MODEL_SPECS = [
     {
         "id": "lgb_v2",
         "model": lgb.LGBMRegressor(
-            n_estimators=800, learning_rate=0.05, max_depth=6,
-            num_leaves=63, min_child_samples=20,
+            n_estimators=1000, learning_rate=0.05, max_depth=6,
+            num_leaves=31, min_child_samples=40,
             subsample=0.9, colsample_bytree=0.9,
             random_state=42, verbose=-1,
         ),
@@ -84,7 +95,7 @@ MODEL_SPECS = [
     {
         "id": "elasticnet",
         "model": ElasticNet(
-            alpha=1.0, l1_ratio=0.5, random_state=42,
+            alpha=0.3, l1_ratio=0.7, random_state=42,
             max_iter=20000, tol=1e-3, selection="random",
         ),
         "needs_imputer": True,
@@ -100,7 +111,7 @@ MODEL_SPECS = [
 
 ENSEMBLE_WEIGHTS = "inverse_rmse"
 
-EXTRA_FEATURE_EXCLUSIONS: list[str] = []
+EXTRA_FEATURE_EXCLUSIONS: list[str] = ["home_team_net_fgm_r5", "away_team_net_fgm_r5", "home_team_net_fga_r5", "away_team_net_fga_r5"]
 EXTRA_FEATURE_INCLUSIONS: list[str] = []
 
 PYTH_EXPONENT = 16.5          # Oliver Pythagorean exponent (Basketball on Paper)
@@ -110,12 +121,16 @@ FF_WEIGHTS = {"efg": 0.40, "tov": 0.25, "oreb": 0.20, "ftr": 0.15}
 # FROZEN — do not modify anything below this line
 # ═══════════════════════════════════════════════════════════════════════════
 
-RESULTS_TSV = "results.tsv"
-EXPERIMENTS_DIR = "experiments"
+BASE_DIR = Path(__file__).resolve().parent
+NBA_DATA_DIR = Path(os.environ.get("NBA_DATA_DIR", str(BASE_DIR / "data"))).resolve()
+NBA_OUTPUTS_DIR = Path(os.environ.get("NBA_OUTPUTS_DIR", str(BASE_DIR / "outputs"))).resolve()
 
-DATA_MODEL_PATH = "data/processed/df_model_3.csv"
-ODDS_PATH = "data/odds/nba_2008-2025.csv"
-PROCESSED_GAMES_PATH = "data/processed/nba_games_with_game_id_processed.csv"
+RESULTS_TSV = str(BASE_DIR / "results.tsv")
+EXPERIMENTS_DIR = str(BASE_DIR / "experiments")
+
+DATA_MODEL_PATH = str(NBA_DATA_DIR / "processed" / "df_model_3.csv")
+ODDS_PATH = str(NBA_DATA_DIR / "odds" / "nba_2008-2025.csv")
+PROCESSED_GAMES_PATH = str(NBA_DATA_DIR / "processed" / "nba_games_with_game_id_processed.csv")
 
 DEFAULT_AMERICAN_ODDS = -110.0
 DEFAULT_PAYOUT = 100.0 / abs(DEFAULT_AMERICAN_ODDS)
