@@ -10,7 +10,6 @@ This repository contains the NBA data-ingestion, feature-engineering, modeling, 
 - `src/ingest/dataPrep/config.py` owns shared DataPrep defaults and per-step overrides.
 - `src/ingest/dataPrep/pipeline.py` owns DataPrep orchestration.
 - `program.md` and `experiment.py` define autoresearch constraints. Treat the `FROZEN` section and results format as protected.
-- `src/ingest/nba_link_ingest/` owns lineup appearance ingestion. Use its date artifacts and logs instead of inventing a second cache format.
 
 ## Data and cache rules
 
