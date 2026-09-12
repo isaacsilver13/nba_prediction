@@ -30,37 +30,9 @@ from sklearn.metrics import mean_squared_error
 import lightgbm as lgb
 from xgboost import XGBRegressor
 
-"""
-NBA Prediction - Autoresearch Experiment Script
-================================================
-This is the file the AI agent modifies each iteration.
-All tunable configuration lives in the AGENT-EDITABLE CONFIG block.
-Data loading and metric calculation are FROZEN below the marked boundary.
-
-On each run, appends one row to results.tsv:
-    timestamp | exp_id | ensemble_rmse | roi | score | params
-"""
-
-import hashlib
-import io
-import json
-import os
-import sys
-import time
-from contextlib import redirect_stderr
-from copy import deepcopy
-from pathlib import Path
-
-import numpy as np
-import pandas as pd
-from scipy.stats import norm
-from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
-from sklearn.impute import SimpleImputer
-from sklearn.linear_model import ElasticNet
-from sklearn.metrics import mean_squared_error
-
-import lightgbm as lgb
-from xgboost import XGBRegressor
+# ═══════════════════════════════════════════════════════════════════════════
+# AGENT-EDITABLE CONFIG — the agent may only edit this section
+# ═══════════════════════════════════════════════════════════════════════════
 
 TRAIN_SIZE = 2500
 TEST_SIZE = 300

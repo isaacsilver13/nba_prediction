@@ -190,7 +190,7 @@ def split_experiment(code: str) -> tuple:
             break
 
     # Find config start (walk back over ═══ separator before AGENT-EDITABLE CONFIG)
-    config_start = 0
+    config_start = None
     for i, line in enumerate(lines[:frozen_start]):
         if CONFIG_MARKER in line:
             j = i
@@ -198,6 +198,15 @@ def split_experiment(code: str) -> tuple:
                 j -= 1
             config_start = j
             break
+
+    if config_start is None:
+        raise RuntimeError(
+            f"Could not find CONFIG_MARKER ({CONFIG_MARKER!r}) in experiment.py "
+            "before the FROZEN section. Refusing to proceed, since silently "
+            "treating the whole header as agent-editable config would "
+            "duplicate the docstring/imports on every iteration. Restore the "
+            f"'{CONFIG_MARKER}' comment line above the config block."
+        )
 
     header_part = "".join(lines[:config_start]).rstrip()
     config_part = "".join(lines[config_start:frozen_start]).rstrip()
