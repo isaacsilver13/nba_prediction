@@ -100,20 +100,18 @@ MODEL_SPECS = [
         ),
         "needs_imputer": True,
     },
-    {
-        "id": "xgb_v1",
-        "model": XGBRegressor(
-            n_estimators=300, learning_rate=0.05, max_depth=4,
-            subsample=0.8, colsample_bytree=0.8,
-            random_state=42, verbosity=0,
-        ),
-        "needs_imputer": False,
-    },
+    # XGBoost, RandomForest, GBR available for the agent to add:
+    # {"id": "xgb_v1", "model": XGBRegressor(n_estimators=400, learning_rate=0.05,
+    #   max_depth=4, subsample=0.8, colsample_bytree=0.8, verbosity=0, random_state=42),
+    #  "needs_imputer": False},
+    # {"id": "random_forest", "model": RandomForestRegressor(n_estimators=200,
+    #   max_depth=10, min_samples_leaf=5, n_jobs=-1, random_state=42),
+    #  "needs_imputer": True},
 ]
 
 ENSEMBLE_WEIGHTS = "inverse_rmse"
 
-EXTRA_FEATURE_EXCLUSIONS: list[str] = []
+EXTRA_FEATURE_EXCLUSIONS: list[str] = ["home_team_net_fgm_r5", "away_team_net_fgm_r5", "home_team_net_fga_r5", "away_team_net_fga_r5"]
 EXTRA_FEATURE_INCLUSIONS: list[str] = []
 
 PYTH_EXPONENT = 16.5          # Oliver Pythagorean exponent (Basketball on Paper)
@@ -123,12 +121,16 @@ FF_WEIGHTS = {"efg": 0.40, "tov": 0.25, "oreb": 0.20, "ftr": 0.15}
 # FROZEN — do not modify anything below this line
 # ═══════════════════════════════════════════════════════════════════════════
 
-RESULTS_TSV = "results.tsv"
-EXPERIMENTS_DIR = "experiments"
+BASE_DIR = Path(__file__).resolve().parent
+NBA_DATA_DIR = Path(os.environ.get("NBA_DATA_DIR", str(BASE_DIR / "data"))).resolve()
+NBA_OUTPUTS_DIR = Path(os.environ.get("NBA_OUTPUTS_DIR", str(BASE_DIR / "outputs"))).resolve()
 
-DATA_MODEL_PATH = "data/processed/df_model_3.csv"
-ODDS_PATH = "data/odds/nba_2008-2025.csv"
-PROCESSED_GAMES_PATH = "data/processed/nba_games_with_game_id_processed.csv"
+RESULTS_TSV = str(BASE_DIR / "results.tsv")
+EXPERIMENTS_DIR = str(BASE_DIR / "experiments")
+
+DATA_MODEL_PATH = str(NBA_DATA_DIR / "processed" / "df_model_3.csv")
+ODDS_PATH = str(NBA_DATA_DIR / "odds" / "nba_2008-2025.csv")
+PROCESSED_GAMES_PATH = str(NBA_DATA_DIR / "processed" / "nba_games_with_game_id_processed.csv")
 
 DEFAULT_AMERICAN_ODDS = -110.0
 DEFAULT_PAYOUT = 100.0 / abs(DEFAULT_AMERICAN_ODDS)

@@ -121,12 +121,16 @@ FF_WEIGHTS = {"efg": 0.40, "tov": 0.25, "oreb": 0.20, "ftr": 0.15}
 # FROZEN — do not modify anything below this line
 # ═══════════════════════════════════════════════════════════════════════════
 
-RESULTS_TSV = "results.tsv"
-EXPERIMENTS_DIR = "experiments"
+BASE_DIR = Path(__file__).resolve().parent
+NBA_DATA_DIR = Path(os.environ.get("NBA_DATA_DIR", str(BASE_DIR / "data"))).resolve()
+NBA_OUTPUTS_DIR = Path(os.environ.get("NBA_OUTPUTS_DIR", str(BASE_DIR / "outputs"))).resolve()
 
-DATA_MODEL_PATH = "data/processed/df_model_3.csv"
-ODDS_PATH = "data/odds/nba_2008-2025.csv"
-PROCESSED_GAMES_PATH = "data/processed/nba_games_with_game_id_processed.csv"
+RESULTS_TSV = str(BASE_DIR / "results.tsv")
+EXPERIMENTS_DIR = str(BASE_DIR / "experiments")
+
+DATA_MODEL_PATH = str(NBA_DATA_DIR / "processed" / "df_model_3.csv")
+ODDS_PATH = str(NBA_DATA_DIR / "odds" / "nba_2008-2025.csv")
+PROCESSED_GAMES_PATH = str(NBA_DATA_DIR / "processed" / "nba_games_with_game_id_processed.csv")
 
 DEFAULT_AMERICAN_ODDS = -110.0
 DEFAULT_PAYOUT = 100.0 / abs(DEFAULT_AMERICAN_ODDS)
