@@ -70,3 +70,14 @@ unmatched; the dashboard defaults to matched-only. Legacy `results.tsv` / `outpu
 "legacy / unbundled" toggle (`legacy_dashboard.py`) and share no run ID. Existing pipeline outputs do not yet record a
 per-bet odds tier, so real runs cannot be bundled until that is emitted; `data/sample/` holds a synthetic run
 (`python -m tests.sample_run` regenerates it).
+
+### Capturing a real run (replay)
+
+```bash
+.venv\Scripts\python -m src.research_dashboard.replay_run --yes
+```
+
+Calls the real `experiment.run_experiment()` (trains the configured models on local data, no network, does not touch
+`results.tsv` or `experiment.py`) while recording per-row predictions, bets and odds tiers, then writes a bundle via
+`capture_run`. It aborts if its ROI differs from `experiment.py`'s or its odds-join replica disagrees with `load_data`.
+Note `p_home` is P(home covers the spread) as `compute_roi` defines it, not P(home wins).

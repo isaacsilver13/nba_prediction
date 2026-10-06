@@ -74,10 +74,10 @@ def check_artifact(run_dir: Path, name: str, entry: dict) -> list:
 
 
 def check_folds(df: pd.DataFrame) -> list:
-    """Test windows must be ordered and non-overlapping."""
+    """Test windows must be ordered and non-overlapping (a boundary day may be shared: folds split by row)."""
     d = df.sort_values("fold")
     s, e = pd.to_datetime(d["test_start"]), pd.to_datetime(d["test_end"])
-    if (s > e).any() or (s.iloc[1:].values <= e.iloc[:-1].values).any():
+    if (s > e).any() or (s.iloc[1:].values < e.iloc[:-1].values).any():
         return ["fold_metrics: test windows overlap or are out of order"]
     return []
 

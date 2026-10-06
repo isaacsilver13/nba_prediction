@@ -96,3 +96,11 @@ def test_tier_filter_and_summary(tmp_path):
     assert set(only["odds_tier"]) == {"matched"} and len(only) < len(bets)
     assert 0 <= bet_summary(only)["max_drawdown"] < 1
     assert reliability(run.read("predictions"))["n"].sum() == 240
+
+
+def test_fold_sharing_a_boundary_day_is_ok(tmp_path):
+    src = write_sources(tmp_path / "src")
+    f = pd.read_csv(src["fold_metrics"])
+    f.loc[1, "test_start"] = f.loc[0, "test_end"]
+    f.to_csv(src["fold_metrics"], index=False)
+    assert load_manifest(capture("r1", src, tmp_path / "out")).status == "complete"
