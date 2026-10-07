@@ -7,13 +7,12 @@ It never writes results.tsv and never edits experiment.py. Trains models on loca
     python -m src.research_dashboard.replay_run --yes [--run-id ID] [--outputs-dir DIR]
 
 Column meaning (matches experiment.py, which models the SPREAD, not the moneyline winner):
-    predictions.p_home  = P(home covers) = norm.cdf((pred - spread_signed) / sigma), as compute_roi computes it
+    predictions.p_home  = P(home covers) = norm.cdf((pred + spread_signed) / sigma), as compute_roi computes it
     predictions.home_win = home covered (home_margin > -spread_signed)
 """
 
 import argparse
 import hashlib
-import inspect
 import json
 import tempfile
 from pathlib import Path
@@ -24,18 +23,9 @@ import pandas as pd
 from .capture_run import capture
 from .catalog import outputs_dir
 
-_RETURN = "return float(bankroll - 1.0)"
-_DETAIL_RETURN = "return dict(df=df, pnl=pnl, selected=selected, win_prob=win_prob, covered=covered, bankroll=bankroll)"
-
-
 def roi_detail_fn(exp):
-    """experiment.compute_roi's own source with only the return changed, so selection/Kelly logic can't drift."""
-    src = inspect.getsource(exp.compute_roi)
-    if _RETURN not in src:
-        raise RuntimeError("experiment.compute_roi changed shape; update replay_run._RETURN")
-    ns = dict(vars(exp))
-    exec(src.replace(_RETURN, _DETAIL_RETURN).replace("def compute_roi(", "def _detail("), ns)
-    return ns["_detail"]
+    """experiment.compute_roi with detail=True: the same selection/Kelly logic, returning per-row pieces."""
+    return lambda df: exp.compute_roi(df, detail=True)
 
 
 def raw_odds_prices(exp) -> pd.DataFrame:
@@ -44,16 +34,7 @@ def raw_odds_prices(exp) -> pd.DataFrame:
     import os
     if not (os.path.exists(exp.ODDS_PATH) and os.path.exists(exp.PROCESSED_GAMES_PATH)):
         return pd.DataFrame(columns=["home_raw", "away_raw"])
-    odds = pd.read_csv(exp.ODDS_PATH, parse_dates=["date"])
-    odds["date"] = pd.to_datetime(odds["date"]).dt.normalize()
-    odds["home"], odds["away"] = exp._normalize_team(odds["home"]), exp._normalize_team(odds["away"])
-    for side, cols in (("home", ["spread_odds_home", "home_spread_odds", "spread_home_odds", "moneyline_home"]),
-                       ("away", ["spread_odds_away", "away_spread_odds", "spread_away_odds", "moneyline_away"])):
-        price = pd.Series(np.nan, index=odds.index, dtype=float)
-        for c in cols:
-            if c in odds.columns:
-                price = price.combine_first(pd.to_numeric(odds[c], errors="coerce"))
-        odds[side + "_raw"] = price
+    odds = exp.read_odds().rename(columns={"home_american": "home_raw", "away_american": "away_raw"})
     dedup = odds.drop_duplicates(["date", "home", "away"], keep="last")
     games = pd.read_csv(exp.PROCESSED_GAMES_PATH, usecols=["GAME_ID", "date", "home", "away"])
     games["GAME_ID_KEY"] = exp._canonical_game_id(games["GAME_ID"])
@@ -144,9 +125,9 @@ def replay(run_id: str, outputs: Path) -> Path:
             cap["folds"][i] = te.index.values  # second pass overwrites with identical values
             yield tr, te
 
-    def roi_spy(preds_df):
+    def roi_spy(preds_df, **kw):
         cap["roi_in"] = preds_df.copy()
-        return orig_roi(preds_df)
+        return orig_roi(preds_df, **kw)
 
     exp.load_data, exp.walk_forward_splits, exp.compute_roi = load_spy, split_spy, roi_spy
     try:
