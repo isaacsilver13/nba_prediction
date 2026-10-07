@@ -52,6 +52,7 @@ MODEL_SPECS = [
             num_leaves=20, min_child_samples=50,
             subsample=0.8, colsample_bytree=0.8,
             random_state=42, verbose=-1,
+            n_jobs=1, deterministic=True, force_row_wise=True,
         ),
         "needs_imputer": False,
     },
@@ -62,6 +63,7 @@ MODEL_SPECS = [
             num_leaves=31, min_child_samples=40,
             subsample=0.9, colsample_bytree=0.9,
             random_state=42, verbose=-1,
+            n_jobs=1, deterministic=True, force_row_wise=True,
         ),
         "needs_imputer": False,
     },
@@ -389,6 +391,9 @@ def load_data() -> pd.DataFrame:
         df["home_american"] = np.nan
         df["away_american"] = np.nan
 
+    # Only games with BOTH real prices are bettable; mirrored/defaulted prices are not market observations
+    df["odds_matched"] = df["home_american"].notna() & df["away_american"].notna()
+
     # Mirror / default missing prices
     m_h = df["home_american"].isna() & df["away_american"].notna()
     m_a = df["away_american"].isna() & df["home_american"].notna()
@@ -461,7 +466,7 @@ def compute_roi(preds_df: pd.DataFrame, detail: bool = False):
     """Compound Kelly-bankroll ROI over all predictions. FROZEN.
 
     detail=True returns the per-row selection/pnl pieces instead of the ROI float."""
-    df = preds_df.sort_values("GAME_DATE").reset_index(drop=True)
+    df = preds_df.sort_values("GAME_DATE", kind="stable").reset_index(drop=True)
 
     edge = df["pred_ensemble"] + df["spread_signed"]
     sigma = df["sigma_ensemble"].replace(0, np.nan).fillna(1.0)
@@ -477,6 +482,12 @@ def compute_roi(preds_df: pd.DataFrame, detail: bool = False):
         ev_home > EV_THRESHOLD, "HOME",
         np.where(ev_away > EV_THRESHOLD, "AWAY", "NONE"),
     )
+
+    # no bets on mirrored/defaulted prices, or in folds whose sigma could not be calibrated
+    if "odds_matched" in df.columns:
+        bet_side = np.where(df["odds_matched"].astype(bool).values, bet_side, "NONE")
+    if "bettable" in df.columns:
+        bet_side = np.where(df["bettable"].astype(bool).values, bet_side, "NONE")
 
     kelly = np.zeros(len(df))
     hm = bet_side == "HOME"
@@ -518,12 +529,16 @@ def compute_roi(preds_df: pd.DataFrame, detail: bool = False):
 
     did_home_cover = df["home_margin"].values > -df["spread_signed"].values
     covered = np.where(did_home_cover, "HOME", "AWAY")
+    push = df["home_margin"].values == -df["spread_signed"].values
+    covered = np.where(push, "PUSH", covered)  # books refund pushes: pnl 0
 
     pnl = np.zeros(len(df))
     sel_idx = df.index[selected]
     for i in sel_idx:
         side = df.at[i, "_bet_side"]
         k = df.at[i, "_kelly"]
+        if covered[i] == "PUSH":
+            continue
         won = covered[i] == side
         if side == "HOME":
             pnl[i] = k * ph.iloc[i] if won else -k
@@ -553,6 +568,7 @@ def flat_stake_stats(d: dict) -> tuple:
     won = d["covered"][sel] == rows["_bet_side"].values
     pay = np.where(rows["_bet_side"] == "HOME", rows["payout_home"], rows["payout_away"])
     r = np.where(won, np.clip(pay, 0.01, None), -1.0)
+    r = np.where(d["covered"][sel] == "PUSH", 0.0, r)
     n = len(r)
     if n < 2:
         return 0.0, 0.0, n
@@ -568,7 +584,8 @@ def calibrate_sigma(out: pd.DataFrame) -> tuple:
     cover = (out["home_margin"].values > -out["spread_signed"].values).astype(float)
     sig = out["sigma_ensemble"].values
     fold = out["fold"].values
-    ok = np.isfinite(edge) & np.isfinite(sig) & np.isfinite(cover)
+    push = out["home_margin"].values == -out["spread_signed"].values
+    ok = np.isfinite(edge) & np.isfinite(sig) & np.isfinite(cover) & ~push
     cal, mults = sig.copy(), {}
     for f in np.unique(fold):
         h = ok & (fold < f)
@@ -655,36 +672,40 @@ def run_experiment() -> dict:
     ).notna().any(axis=1)
     out = df.loc[covered_mask, [
         "GAME_DATE", "home_margin", "spread_signed",
-        "payout_home", "payout_away",
+        "payout_home", "payout_away", "odds_matched",
     ]].copy()
 
-    # Compute per-model mean RMSE
+    # Overall mean RMSE per model (reporting only)
     rmse_means = {
         mid: float(np.mean(v)) for mid, v in rmse_by_model.items() if v
     }
 
-    # Ensemble weights
-    if isinstance(ENSEMBLE_WEIGHTS, dict):
-        raw_w = {k: float(v) for k, v in ENSEMBLE_WEIGHTS.items() if k in rmse_means}
-    elif ENSEMBLE_WEIGHTS == "equal":
-        raw_w = {mid: 1.0 for mid in rmse_means}
-    else:  # inverse_rmse
-        raw_w = {mid: 1.0 / v for mid, v in rmse_means.items() if v > 0}
+    def fold_weights(upto: int) -> dict:
+        """Ensemble weights for a fold, using only RMSEs of folds < upto (no lookahead; equal at fold 1)."""
+        if isinstance(ENSEMBLE_WEIGHTS, dict):
+            raw = {k: float(v) for k, v in ENSEMBLE_WEIGHTS.items() if k in rmse_means}
+        elif ENSEMBLE_WEIGHTS == "inverse_rmse" and upto > 1:
+            raw = {m: 1.0 / float(np.mean(v[: upto - 1])) for m, v in rmse_by_model.items() if v}
+        else:
+            raw = {m: 1.0 for m in rmse_means}
+        tot = sum(raw.values())
+        if tot == 0:
+            raise RuntimeError("All ensemble weights are zero.")
+        return {k: v / tot for k, v in raw.items()}
 
-    total_w = sum(raw_w.values())
-    if total_w == 0:
-        raise RuntimeError("All ensemble weights are zero.")
-    weights = {k: v / total_w for k, v in raw_w.items()}
-
-    out["pred_ensemble"] = sum(
-        pred_store[mid].loc[out.index] * w for mid, w in weights.items()
-    )
+    out["fold"] = fold_of.loc[out.index]
+    out["pred_ensemble"] = np.nan
+    for f in np.unique(out["fold"]):
+        m = out["fold"] == f
+        w = fold_weights(int(f))
+        out.loc[m, "pred_ensemble"] = sum(pred_store[mid].loc[out.index[m]] * wt for mid, wt in w.items())
+    weights = fold_weights(n_folds + 1)
     out["sigma_ensemble"] = pd.concat(
         [sigma_store[mid].loc[out.index] for mid in weights], axis=1
     ).mean(axis=1)
 
-    out["fold"] = fold_of.loc[out.index]
     out["sigma_ensemble"], sigma_mults = calibrate_sigma(out)
+    out["bettable"] = out["fold"].map(lambda f: sigma_mults[int(f)] < NO_BET_SIGMA_MULT)
 
     ensemble_rmse = float(
         np.sqrt(mean_squared_error(out["home_margin"], out["pred_ensemble"]))
