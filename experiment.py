@@ -27,6 +27,7 @@ from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import ElasticNet
 from sklearn.metrics import mean_squared_error
+from joblib import Parallel, delayed
 
 import lightgbm as lgb
 from xgboost import XGBRegressor
@@ -41,6 +42,7 @@ TEST_SIZE = 300
 EV_THRESHOLD = 0.02         # minimum expected value to place a bet
 FRACTIONAL_KELLY = 0.30     # fraction of full Kelly to wager
 MAX_KELLY = 0.08            # per-bet bankroll cap
+FOLD_WORKERS = 8            # parallel worker processes over walk-forward folds (speed only; 1 = serial)
 TOP_N_BETS_PER_DAY = 5      # max bets selected per game-day
 DAILY_MAX_EXPOSURE = 0.25   # max total bankroll at risk per day
 
@@ -613,6 +615,26 @@ def _fit_predict(spec, X_tr, y_tr, X_te):
         return model.predict(X_te)
 
 
+def _run_fold(train_df, test_df, features) -> dict:
+    """Fit every model on one walk-forward fold. Returns {model_id: (test preds, sigma, test rmse)}."""
+    X_tr, y_tr = train_df[features], train_df["home_margin"]
+    X_te, y_te = test_df[features], test_df["home_margin"]
+
+    # Drop columns that are all-NaN in training
+    valid_cols = X_tr.columns[X_tr.notna().any()].tolist()
+    X_tr, X_te = X_tr[valid_cols], X_te[valid_cols]
+
+    res = {}
+    for spec in MODEL_SPECS:
+        p_te = _fit_predict(spec, X_tr, y_tr, X_te)
+        # sigma from out-of-sample residuals: fit on the first 80% of train, score the last 20%
+        cut = int(len(X_tr) * 0.8)
+        p_val = _fit_predict(spec, X_tr.iloc[:cut], y_tr.iloc[:cut], X_tr.iloc[cut:])
+        sigma = float(np.std(y_tr.iloc[cut:].values - p_val)) or 1.0
+        res[spec["id"]] = (p_te, sigma, float(np.sqrt(mean_squared_error(y_te, p_te))))
+    return res
+
+
 def run_experiment() -> dict:
     """Train all models, compute ensemble, return metrics. FROZEN."""
     df = load_data()
@@ -638,33 +660,16 @@ def run_experiment() -> dict:
     rmse_by_model = {s["id"]: [] for s in MODEL_SPECS}
     fold_of = pd.Series(np.nan, index=df.index)
 
-    for fold_i, (train_df, test_df) in enumerate(
-        walk_forward_splits(df, "GAME_DATE", t_size, v_size), 1
-    ):
-        X_tr = train_df[features]
-        y_tr = train_df["home_margin"]
-        X_te = test_df[features]
-        y_te = test_df["home_margin"]
-
-        # Drop columns that are all-NaN in training
-        valid_cols = X_tr.columns[X_tr.notna().any()].tolist()
-        X_tr = X_tr[valid_cols]
-        X_te = X_te[valid_cols]
-
-        for spec in MODEL_SPECS:
-            mid = spec["id"]
-            p_te = _fit_predict(spec, X_tr, y_tr, X_te)
-            # sigma from out-of-sample residuals: fit on the first 80% of train, score the last 20%
-            cut = int(len(X_tr) * 0.8)
-            p_val = _fit_predict(spec, X_tr.iloc[:cut], y_tr.iloc[:cut], X_tr.iloc[cut:])
-            sigma = float(np.std(y_tr.iloc[cut:].values - p_val)) or 1.0
-            rmse_by_model[mid].append(float(np.sqrt(mean_squared_error(y_te, p_te))))
+    folds = list(walk_forward_splits(df, "GAME_DATE", t_size, v_size))
+    results = Parallel(n_jobs=min(FOLD_WORKERS, len(folds)))(
+        delayed(_run_fold)(train_df, test_df, features) for train_df, test_df in folds
+    )  # results come back in fold order; folds are independent, each model fits single-threaded
+    for fold_i, ((_, test_df), res) in enumerate(zip(folds, results), 1):
+        for mid, (p_te, sigma, rmse) in res.items():
+            rmse_by_model[mid].append(rmse)
             pred_store[mid].loc[test_df.index] = p_te
             sigma_store[mid].loc[test_df.index] = sigma
         fold_of.loc[test_df.index] = fold_i
-
-        if fold_i % 5 == 0:
-            print(f"[experiment] fold {fold_i}/{n_folds} done")
 
     # Collect all test-covered rows
     covered_mask = pd.concat(
