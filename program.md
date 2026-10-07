@@ -33,12 +33,14 @@
 
 ## Goal
 
-Maximize `score = roi / (1 + ensemble_rmse)` where:
-- `roi` = compound Kelly-bankroll return over all walk-forward test folds (higher is better)
-- `ensemble_rmse` = RMSE of the weighted ensemble on held-out test rows (lower is better)
+Maximize `score = flat_roi - flat_roi_se` where, over the bets the strategy places on held-out walk-forward folds:
+- `flat_roi` = mean return per bet at a 1-unit stake (not compounded)
+- `flat_roi_se` = its standard error, so a noisy edge on few bets scores lower
+- fewer than 100 bets scores `-1.0` (too little evidence)
 
-A higher score means better edge-adjusted betting returns. This is the single number that
-decides whether a change is kept or reverted.
+Win probabilities are calibrated walk-forward: each fold's sigma is scaled using only earlier folds, so
+overconfidence is corrected rather than rewarded. `roi` (compound Kelly) and `ensemble_rmse` are still logged
+as diagnostics but do not decide keep/revert. This is the single number that decides whether a change is kept or reverted.
 
 ---
 
@@ -80,7 +82,7 @@ decides whether a change is kept or reverted.
 - Any code below `# FROZEN — do not modify anything below this line`
 - Data loading logic (`load_data`)
 - Walk-forward split logic (`walk_forward_splits`)
-- Metric calculation (`compute_roi`, RMSE computation, `score` formula)
+- Metric calculation (`compute_roi`, `calibrate_sigma`, `flat_stake_stats`, RMSE computation, `score` formula)
 - Results logging (`write_results`, `params_summary`, the `results.tsv` format)
 
 ---
@@ -88,11 +90,11 @@ decides whether a change is kept or reverted.
 ## Research directions to explore
 
 > **CURRENT SITUATION (read this first):**
-> `roi = -1.0` in every run so far — the Kelly bankroll is collapsing completely.
-> Changing `EV_THRESHOLD`, `FRACTIONAL_KELLY`, or `MAX_KELLY` has **zero effect** when
-> the model's predictions are not correlated with outcomes. The ONLY levers that matter
-> right now are ones that reduce `ensemble_rmse`. Focus exclusively on MODEL_SPECS and
-> feature changes until RMSE drops meaningfully (target: below 15.5).
+> Earlier results were produced with backtest bugs (misaligned predictions, wrong edge sign, in-sample sigma) and
+> are archived in `results_archive_pre_fix_2026-10-07.tsv` — do not compare against them. After the fixes the model
+> has at most a small, statistically weak edge (flat ROI about +3% per bet, CI includes zero) and its raw
+> probabilities are overconfident. Improvements must show up as a higher `score`, which means a real, repeatable
+> edge on enough bets. Lower `ensemble_rmse` helps only if it lifts `score`; the market line itself has RMSE about 13.35.
 
 ### Priority 1 — Reduce RMSE (do these first)
 

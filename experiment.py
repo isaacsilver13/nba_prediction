@@ -21,46 +21,20 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy.optimize import minimize_scalar
 from scipy.stats import norm
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import ElasticNet
 from sklearn.metrics import mean_squared_error
+from joblib import Parallel, delayed
 
 import lightgbm as lgb
 from xgboost import XGBRegressor
 
-"""
-NBA Prediction - Autoresearch Experiment Script
-================================================
-This is the file the AI agent modifies each iteration.
-All tunable configuration lives in the AGENT-EDITABLE CONFIG block.
-Data loading and metric calculation are FROZEN below the marked boundary.
-
-On each run, appends one row to results.tsv:
-    timestamp | exp_id | ensemble_rmse | roi | score | params
-"""
-
-import hashlib
-import io
-import json
-import os
-import sys
-import time
-from contextlib import redirect_stderr
-from copy import deepcopy
-from pathlib import Path
-
-import numpy as np
-import pandas as pd
-from scipy.stats import norm
-from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
-from sklearn.impute import SimpleImputer
-from sklearn.linear_model import ElasticNet
-from sklearn.metrics import mean_squared_error
-
-import lightgbm as lgb
-from xgboost import XGBRegressor
+# ═══════════════════════════════════════════════════════════════════════════
+# AGENT-EDITABLE CONFIG — the agent may only edit this section
+# ═══════════════════════════════════════════════════════════════════════════
 
 TRAIN_SIZE = 2500
 TEST_SIZE = 300
@@ -68,6 +42,7 @@ TEST_SIZE = 300
 EV_THRESHOLD = 0.02         # minimum expected value to place a bet
 FRACTIONAL_KELLY = 0.30     # fraction of full Kelly to wager
 MAX_KELLY = 0.08            # per-bet bankroll cap
+FOLD_WORKERS = 8            # parallel worker processes over walk-forward folds (speed only; 1 = serial)
 TOP_N_BETS_PER_DAY = 5      # max bets selected per game-day
 DAILY_MAX_EXPOSURE = 0.25   # max total bankroll at risk per day
 
@@ -79,6 +54,7 @@ MODEL_SPECS = [
             num_leaves=20, min_child_samples=50,
             subsample=0.8, colsample_bytree=0.8,
             random_state=42, verbose=-1,
+            n_jobs=1, deterministic=True, force_row_wise=True,
         ),
         "needs_imputer": False,
     },
@@ -89,6 +65,7 @@ MODEL_SPECS = [
             num_leaves=31, min_child_samples=40,
             subsample=0.9, colsample_bytree=0.9,
             random_state=42, verbose=-1,
+            n_jobs=1, deterministic=True, force_row_wise=True,
         ),
         "needs_imputer": False,
     },
@@ -129,7 +106,7 @@ RESULTS_TSV = str(BASE_DIR / "results.tsv")
 EXPERIMENTS_DIR = str(BASE_DIR / "experiments")
 
 DATA_MODEL_PATH = str(NBA_DATA_DIR / "processed" / "df_model_3.csv")
-ODDS_PATH = str(NBA_DATA_DIR / "odds" / "nba_2008-2025.csv")
+ODDS_PATH = str(NBA_DATA_DIR / "all_odds.csv")
 PROCESSED_GAMES_PATH = str(NBA_DATA_DIR / "processed" / "nba_games_with_game_id_processed.csv")
 
 DEFAULT_AMERICAN_ODDS = -110.0
@@ -142,6 +119,17 @@ TEAM_MAP = {
     "mia": "MIA", "mil": "MIL", "min": "MIN", "no": "NOP", "ny": "NYK",
     "okc": "OKC", "orl": "ORL", "phi": "PHI", "phx": "PHX", "por": "POR",
     "sa": "SAS", "sac": "SAC", "tor": "TOR", "utah": "UTA", "wsh": "WAS",
+}
+
+# all_odds.csv names teams by city
+CITY_TO_ABBR = {
+    "Atlanta": "ATL", "Boston": "BOS", "Brooklyn": "BKN", "Charlotte": "CHA", "Chicago": "CHI",
+    "Cleveland": "CLE", "Dallas": "DAL", "Denver": "DEN", "Detroit": "DET", "Golden State": "GSW",
+    "Houston": "HOU", "Indiana": "IND", "LA Clippers": "LAC", "LA Lakers": "LAL", "Memphis": "MEM",
+    "Miami": "MIA", "Milwaukee": "MIL", "Minnesota": "MIN", "New Orleans": "NOP", "New York": "NYK",
+    "Oklahoma City": "OKC", "Orlando": "ORL", "Philadelphia": "PHI", "Phoenix": "PHX",
+    "Portland": "POR", "Sacramento": "SAC", "San Antonio": "SAS", "Toronto": "TOR",
+    "Utah": "UTA", "Washington": "WAS",
 }
 
 DENY_EXACT = {
@@ -349,6 +337,17 @@ def add_oliver_features(df: pd.DataFrame) -> pd.DataFrame:
 
 # ── Data loading ─────────────────────────────────────────────────────────────
 
+def read_odds() -> pd.DataFrame:
+    """Spread prices per game from all_odds.csv. Columns: date, home, away, home_american, away_american."""
+    odds = pd.read_csv(ODDS_PATH)
+    odds["date"] = pd.to_datetime(odds["game_date"].str[:10])
+    odds["home"] = odds["home_team"].map(CITY_TO_ABBR)
+    odds["away"] = odds["away_team"].map(CITY_TO_ABBR)
+    odds["home_american"] = pd.to_numeric(odds["spread_home_odds"], errors="coerce")
+    odds["away_american"] = pd.to_numeric(odds["spread_away_odds"], errors="coerce")
+    return odds[["date", "home", "away", "home_american", "away_american"]]
+
+
 def load_data() -> pd.DataFrame:
     """Load feature table and join odds. FROZEN."""
     df = pd.read_csv(DATA_MODEL_PATH, parse_dates=["date_x"])
@@ -371,25 +370,7 @@ def load_data() -> pd.DataFrame:
 
     # Load and join odds
     if os.path.exists(ODDS_PATH) and os.path.exists(PROCESSED_GAMES_PATH):
-        odds = pd.read_csv(ODDS_PATH, parse_dates=["date"])
-        odds["date"] = pd.to_datetime(odds["date"]).dt.normalize()
-        odds["home"] = _normalize_team(odds["home"])
-        odds["away"] = _normalize_team(odds["away"])
-
-        # Collect the best available spread/moneyline prices
-        home_price = pd.Series(np.nan, index=odds.index, dtype=float)
-        away_price = pd.Series(np.nan, index=odds.index, dtype=float)
-        for col in ["spread_odds_home", "home_spread_odds", "spread_home_odds", "moneyline_home"]:
-            if col in odds.columns:
-                v = pd.to_numeric(odds[col], errors="coerce")
-                home_price = home_price.combine_first(v)
-        for col in ["spread_odds_away", "away_spread_odds", "spread_away_odds", "moneyline_away"]:
-            if col in odds.columns:
-                v = pd.to_numeric(odds[col], errors="coerce")
-                away_price = away_price.combine_first(v)
-
-        odds["home_american"] = home_price
-        odds["away_american"] = away_price
+        odds = read_odds()
         odds_dedup = odds.drop_duplicates(["date", "home", "away"], keep="last")
 
         games2 = pd.read_csv(
@@ -412,6 +393,9 @@ def load_data() -> pd.DataFrame:
         df["home_american"] = np.nan
         df["away_american"] = np.nan
 
+    # Only games with BOTH real prices are bettable; mirrored/defaulted prices are not market observations
+    df["odds_matched"] = df["home_american"].notna() & df["away_american"].notna()
+
     # Mirror / default missing prices
     m_h = df["home_american"].isna() & df["away_american"].notna()
     m_a = df["away_american"].isna() & df["home_american"].notna()
@@ -426,7 +410,7 @@ def load_data() -> pd.DataFrame:
     df["payout_away"] = pa.where(pa > 0, DEFAULT_PAYOUT).fillna(DEFAULT_PAYOUT)
 
     df = add_oliver_features(df)
-    df = df.sort_values("GAME_DATE").reset_index(drop=True)
+    df = df.sort_values("GAME_DATE", kind="stable").reset_index(drop=True)
     return df
 
 
@@ -467,7 +451,7 @@ def build_features(df: pd.DataFrame) -> list:
 
 def walk_forward_splits(df, time_col, train_size, test_size):
     """Walk-forward generator. FROZEN."""
-    df = df.sort_values(time_col).reset_index(drop=True)
+    df = df.sort_values(time_col, kind="stable").reset_index(drop=True)
     start = 0
     while True:
         train_end = start + train_size
@@ -480,11 +464,13 @@ def walk_forward_splits(df, time_col, train_size, test_size):
 
 # ── ROI computation ───────────────────────────────────────────────────────────
 
-def compute_roi(preds_df: pd.DataFrame) -> float:
-    """Compound Kelly-bankroll ROI over all predictions. FROZEN."""
-    df = preds_df.sort_values("GAME_DATE").reset_index(drop=True)
+def compute_roi(preds_df: pd.DataFrame, detail: bool = False):
+    """Compound Kelly-bankroll ROI over all predictions. FROZEN.
 
-    edge = df["pred_ensemble"] - df["spread_signed"]
+    detail=True returns the per-row selection/pnl pieces instead of the ROI float."""
+    df = preds_df.sort_values("GAME_DATE", kind="stable").reset_index(drop=True)
+
+    edge = df["pred_ensemble"] + df["spread_signed"]
     sigma = df["sigma_ensemble"].replace(0, np.nan).fillna(1.0)
     win_prob = norm.cdf(edge / sigma)
 
@@ -498,6 +484,12 @@ def compute_roi(preds_df: pd.DataFrame) -> float:
         ev_home > EV_THRESHOLD, "HOME",
         np.where(ev_away > EV_THRESHOLD, "AWAY", "NONE"),
     )
+
+    # no bets on mirrored/defaulted prices, or in folds whose sigma could not be calibrated
+    if "odds_matched" in df.columns:
+        bet_side = np.where(df["odds_matched"].astype(bool).values, bet_side, "NONE")
+    if "bettable" in df.columns:
+        bet_side = np.where(df["bettable"].astype(bool).values, bet_side, "NONE")
 
     kelly = np.zeros(len(df))
     hm = bet_side == "HOME"
@@ -539,12 +531,16 @@ def compute_roi(preds_df: pd.DataFrame) -> float:
 
     did_home_cover = df["home_margin"].values > -df["spread_signed"].values
     covered = np.where(did_home_cover, "HOME", "AWAY")
+    push = df["home_margin"].values == -df["spread_signed"].values
+    covered = np.where(push, "PUSH", covered)  # books refund pushes: pnl 0
 
     pnl = np.zeros(len(df))
     sel_idx = df.index[selected]
     for i in sel_idx:
         side = df.at[i, "_bet_side"]
         k = df.at[i, "_kelly"]
+        if covered[i] == "PUSH":
+            continue
         won = covered[i] == side
         if side == "HOME":
             pnl[i] = k * ph.iloc[i] if won else -k
@@ -555,10 +551,89 @@ def compute_roi(preds_df: pd.DataFrame) -> float:
     for p in pnl:
         bankroll *= (1.0 + p)
 
+    if detail:
+        return dict(df=df, pnl=pnl, selected=selected, win_prob=win_prob, covered=covered, bankroll=bankroll)
     return float(bankroll - 1.0)
 
 
 # ── Main experiment ───────────────────────────────────────────────────────────
+
+MIN_BETS_FOR_SCORE = 100   # fewer bets than this is too little evidence to score
+CAL_MIN_ROWS = 250         # earlier-fold rows needed before sigma can be calibrated
+NO_BET_SIGMA_MULT = 100.0  # uncalibrated folds get p~0.5 everywhere, so no bets
+
+
+def flat_stake_stats(d: dict) -> tuple:
+    """Return per bet at a 1-unit stake on the selected bets: (mean, standard error, n). Not compounded."""
+    sel = np.asarray(d["selected"], dtype=bool)
+    rows = d["df"][sel]
+    won = d["covered"][sel] == rows["_bet_side"].values
+    pay = np.where(rows["_bet_side"] == "HOME", rows["payout_home"], rows["payout_away"])
+    r = np.where(won, np.clip(pay, 0.01, None), -1.0)
+    r = np.where(d["covered"][sel] == "PUSH", 0.0, r)
+    n = len(r)
+    if n < 2:
+        return 0.0, 0.0, n
+    return float(r.mean()), float(r.std(ddof=1) / np.sqrt(n)), n
+
+
+def calibrate_sigma(out: pd.DataFrame) -> tuple:
+    """Walk-forward probit calibration of sigma_ensemble.
+
+    Each fold's sigma is scaled by the multiplier (>= 1) that best fits cover outcomes in EARLIER folds only,
+    so win_prob = norm.cdf(edge / sigma) is calibrated without peeking. Returns (sigma, {fold: multiplier})."""
+    edge = (out["pred_ensemble"] + out["spread_signed"]).values
+    cover = (out["home_margin"].values > -out["spread_signed"].values).astype(float)
+    sig = out["sigma_ensemble"].values
+    fold = out["fold"].values
+    push = out["home_margin"].values == -out["spread_signed"].values
+    ok = np.isfinite(edge) & np.isfinite(sig) & np.isfinite(cover) & ~push
+    cal, mults = sig.copy(), {}
+    for f in np.unique(fold):
+        h = ok & (fold < f)
+        if h.sum() < CAL_MIN_ROWS:
+            mult = NO_BET_SIGMA_MULT
+        else:
+            def nll(c):
+                p = np.clip(norm.cdf(edge[h] / (c * sig[h])), 1e-6, 1 - 1e-6)
+                return -(cover[h] * np.log(p) + (1 - cover[h]) * np.log(1 - p)).mean()
+            mult = float(minimize_scalar(nll, bounds=(1.0, 50.0), method="bounded").x)
+        cal[fold == f] = sig[fold == f] * mult
+        mults[int(f)] = mult
+    return cal, mults
+
+
+def _fit_predict(spec, X_tr, y_tr, X_te):
+    """Fit a deepcopy of spec's model on X_tr/y_tr and predict X_te."""
+    model = deepcopy(spec["model"])
+    if spec["needs_imputer"]:
+        imp = SimpleImputer(strategy="median", keep_empty_features=True)
+        X_tr = pd.DataFrame(imp.fit_transform(X_tr), columns=X_tr.columns, index=X_tr.index)
+        X_te = pd.DataFrame(imp.transform(X_te), columns=X_te.columns, index=X_te.index)
+    with redirect_stderr(io.StringIO()):
+        model.fit(X_tr, y_tr)
+        return model.predict(X_te)
+
+
+def _run_fold(train_df, test_df, features) -> dict:
+    """Fit every model on one walk-forward fold. Returns {model_id: (test preds, sigma, test rmse)}."""
+    X_tr, y_tr = train_df[features], train_df["home_margin"]
+    X_te, y_te = test_df[features], test_df["home_margin"]
+
+    # Drop columns that are all-NaN in training
+    valid_cols = X_tr.columns[X_tr.notna().any()].tolist()
+    X_tr, X_te = X_tr[valid_cols], X_te[valid_cols]
+
+    res = {}
+    for spec in MODEL_SPECS:
+        p_te = _fit_predict(spec, X_tr, y_tr, X_te)
+        # sigma from out-of-sample residuals: fit on the first 80% of train, score the last 20%
+        cut = int(len(X_tr) * 0.8)
+        p_val = _fit_predict(spec, X_tr.iloc[:cut], y_tr.iloc[:cut], X_tr.iloc[cut:])
+        sigma = float(np.std(y_tr.iloc[cut:].values - p_val)) or 1.0
+        res[spec["id"]] = (p_te, sigma, float(np.sqrt(mean_squared_error(y_te, p_te))))
+    return res
+
 
 def run_experiment() -> dict:
     """Train all models, compute ensemble, return metrics. FROZEN."""
@@ -583,42 +658,18 @@ def run_experiment() -> dict:
     pred_store  = {s["id"]: pd.Series(np.nan, index=df.index) for s in MODEL_SPECS}
     sigma_store = {s["id"]: pd.Series(np.nan, index=df.index) for s in MODEL_SPECS}
     rmse_by_model = {s["id"]: [] for s in MODEL_SPECS}
+    fold_of = pd.Series(np.nan, index=df.index)
 
-    for fold_i, (train_df, test_df) in enumerate(
-        walk_forward_splits(df, "GAME_DATE", t_size, v_size), 1
-    ):
-        X_tr = train_df[features]
-        y_tr = train_df["home_margin"]
-        X_te = test_df[features]
-        y_te = test_df["home_margin"]
-
-        # Drop columns that are all-NaN in training
-        valid_cols = X_tr.columns[X_tr.notna().any()].tolist()
-        X_tr = X_tr[valid_cols]
-        X_te = X_te[valid_cols]
-
-        for spec in MODEL_SPECS:
-            mid = spec["id"]
-            model = deepcopy(spec["model"])
-            Xtr_, Xte_ = X_tr, X_te
-            if spec["needs_imputer"]:
-                imp = SimpleImputer(strategy="median")
-                Xtr_ = pd.DataFrame(
-                    imp.fit_transform(X_tr), columns=valid_cols, index=X_tr.index
-                )
-                Xte_ = pd.DataFrame(
-                    imp.transform(X_te), columns=valid_cols, index=X_te.index
-                )
-            with redirect_stderr(io.StringIO()):
-                model.fit(Xtr_, y_tr)
-                p_te = model.predict(Xte_)
-                p_tr = model.predict(Xtr_)
-            rmse_by_model[mid].append(float(np.sqrt(mean_squared_error(y_te, p_te))))
+    folds = list(walk_forward_splits(df, "GAME_DATE", t_size, v_size))
+    results = Parallel(n_jobs=min(FOLD_WORKERS, len(folds)))(
+        delayed(_run_fold)(train_df, test_df, features) for train_df, test_df in folds
+    )  # results come back in fold order; folds are independent, each model fits single-threaded
+    for fold_i, ((_, test_df), res) in enumerate(zip(folds, results), 1):
+        for mid, (p_te, sigma, rmse) in res.items():
+            rmse_by_model[mid].append(rmse)
             pred_store[mid].loc[test_df.index] = p_te
-            sigma_store[mid].loc[test_df.index] = float(np.nanstd(y_tr.values - p_tr)) or 1.0
-
-        if fold_i % 5 == 0:
-            print(f"[experiment] fold {fold_i}/{n_folds} done")
+            sigma_store[mid].loc[test_df.index] = sigma
+        fold_of.loc[test_df.index] = fold_i
 
     # Collect all test-covered rows
     covered_mask = pd.concat(
@@ -626,46 +677,60 @@ def run_experiment() -> dict:
     ).notna().any(axis=1)
     out = df.loc[covered_mask, [
         "GAME_DATE", "home_margin", "spread_signed",
-        "payout_home", "payout_away",
+        "payout_home", "payout_away", "odds_matched",
     ]].copy()
 
-    # Compute per-model mean RMSE
+    # Overall mean RMSE per model (reporting only)
     rmse_means = {
         mid: float(np.mean(v)) for mid, v in rmse_by_model.items() if v
     }
 
-    # Ensemble weights
-    if isinstance(ENSEMBLE_WEIGHTS, dict):
-        raw_w = {k: float(v) for k, v in ENSEMBLE_WEIGHTS.items() if k in rmse_means}
-    elif ENSEMBLE_WEIGHTS == "equal":
-        raw_w = {mid: 1.0 for mid in rmse_means}
-    else:  # inverse_rmse
-        raw_w = {mid: 1.0 / v for mid, v in rmse_means.items() if v > 0}
+    def fold_weights(upto: int) -> dict:
+        """Ensemble weights for a fold, using only RMSEs of folds < upto (no lookahead; equal at fold 1)."""
+        if isinstance(ENSEMBLE_WEIGHTS, dict):
+            raw = {k: float(v) for k, v in ENSEMBLE_WEIGHTS.items() if k in rmse_means}
+        elif ENSEMBLE_WEIGHTS == "inverse_rmse" and upto > 1:
+            raw = {m: 1.0 / float(np.mean(v[: upto - 1])) for m, v in rmse_by_model.items() if v}
+        else:
+            raw = {m: 1.0 for m in rmse_means}
+        tot = sum(raw.values())
+        if tot == 0:
+            raise RuntimeError("All ensemble weights are zero.")
+        return {k: v / tot for k, v in raw.items()}
 
-    total_w = sum(raw_w.values())
-    if total_w == 0:
-        raise RuntimeError("All ensemble weights are zero.")
-    weights = {k: v / total_w for k, v in raw_w.items()}
-
-    out["pred_ensemble"] = sum(
-        pred_store[mid].loc[out.index] * w for mid, w in weights.items()
-    )
+    out["fold"] = fold_of.loc[out.index]
+    out["pred_ensemble"] = np.nan
+    for f in np.unique(out["fold"]):
+        m = out["fold"] == f
+        w = fold_weights(int(f))
+        out.loc[m, "pred_ensemble"] = sum(pred_store[mid].loc[out.index[m]] * wt for mid, wt in w.items())
+    weights = fold_weights(n_folds + 1)
     out["sigma_ensemble"] = pd.concat(
         [sigma_store[mid].loc[out.index] for mid in weights], axis=1
     ).mean(axis=1)
+
+    out["sigma_ensemble"], sigma_mults = calibrate_sigma(out)
+    out["bettable"] = out["fold"].map(lambda f: sigma_mults[int(f)] < NO_BET_SIGMA_MULT)
 
     ensemble_rmse = float(
         np.sqrt(mean_squared_error(out["home_margin"], out["pred_ensemble"]))
     )
     mean_model_rmse = float(np.mean(list(rmse_means.values()))) if rmse_means else float("nan")
-    roi = compute_roi(out)
-    score = roi / (1.0 + ensemble_rmse)  # higher is better
+    detail = compute_roi(out, detail=True)
+    roi = float(detail["bankroll"] - 1.0)
+    flat_roi, flat_se, n_bets = flat_stake_stats(detail)
+    # lower bound on flat-stake ROI per bet (mean - 1 SE); too few bets -> unscorable. Higher is better.
+    score = flat_roi - flat_se if n_bets >= MIN_BETS_FOR_SCORE else -1.0
 
     return {
         "ensemble_rmse": round(ensemble_rmse, 4),
         "mean_model_rmse": round(mean_model_rmse, 4),
         "roi": round(roi, 4),
         "score": round(score, 6),
+        "flat_roi": round(flat_roi, 6),
+        "flat_roi_se": round(flat_se, 6),
+        "n_bets": n_bets,
+        "sigma_mult_last": round(sigma_mults[max(sigma_mults)], 2),
         "n_folds": n_folds,
         "n_models": len(MODEL_SPECS),
         "train_size": t_size,
@@ -719,7 +784,7 @@ if __name__ == "__main__":
     elapsed = time.time() - t0
 
     print(f"[experiment] ensemble_rmse={metrics['ensemble_rmse']}")
-    print(f"[experiment] roi={metrics['roi']}")
+    print(f"[experiment] roi={metrics['roi']}  flat_roi={metrics['flat_roi']}  n_bets={metrics['n_bets']}")
     print(f"[experiment] score={metrics['score']}")
     print(f"[experiment] elapsed={elapsed:.1f}s")
 
