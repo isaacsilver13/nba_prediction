@@ -18,7 +18,7 @@
 - Data root: `Path(os.environ.get("NBA_DATA_DIR", <repo>/data)).resolve() / "raw" / "odds"` (matches `experiment.py:102`).
 - Slate/window times are America/Chicago wall clock; stored timestamps are UTC ISO `YYYY-MM-DDTHH:MM:SSZ`.
 - Quota stops: SGO 2,300 objects per UTC month (from `requests.csv`); Odds API latest logged `x-requests-used` + 3 > 450.
-- Slot windows: SGO `open` 10:00–12:00, `props` 15:00–17:00, `close@HHMM` tip−40→tip−3 (request tip±5 min), `settle` next day 10:00–12:00 `finalized=true`; Odds API `open` 10:00–12:00, `close@HHMM` per 30-min tip group, max 3/day (largest groups). Max 3 failures per slot.
+- Slot windows: SGO `open` 10:00–12:00, `props` 15:00–17:00, `close@HHMM` tip−20→tip−3 (request tip±5 min; final-review fix, was tip−40), `settle` next day 10:00–12:00 `finalized=true`; Odds API `open` 10:00–12:00, `close@HHMM` per 30-min tip group, max 3/day (largest groups). Max 3 failures per slot.
 - `requests.csv` columns, in order: `request_id, provider, slate_date, slot, attempted_at_utc, endpoint, http_status, outcome, error, objects, quota_used, quota_remaining, payload_path`; `outcome ∈ {ok, empty, error, missed, skipped_quota}`.
 - No test may touch the network (autouse fixture makes `urlopen` raise).
 
