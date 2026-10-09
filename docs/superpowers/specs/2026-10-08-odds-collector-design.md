@@ -145,7 +145,7 @@ CI (`.github/workflows/ci.yml`) is extended to run `pytest tests/test_odds_colle
 
 1. Implement on branch, open PR.
 2. User creates: SGO account/key, Odds API key, private data repo, `ODDS_DATA_TOKEN`, repo secrets, cron-job.org job + dispatch token (steps in `docs/odds-collector.md`).
-3. Merge (GitHub only dispatches workflows that exist on the default branch; the job is skipped until the `ODDS_DATA_REPO` variable is set, so merging is inert). **After explicit user approval:** one manual `workflow_dispatch` capture per provider (`--capture sgo` is capped at `limit=5` events). Verify: returned bookmaker IDs, presence of `1h`/`1q` oddIDs and props, presence of `openOdds/closeOdds`, actual object usage vs `/account/usage`, raw + parquet + log rows in the data repo, key absent from all artifacts.
+3. Merge (GitHub only dispatches workflows that exist on the default branch; the job is skipped until the `ODDS_DATA_REPO` variable is set, so merging is inert). **After explicit user approval:** one manual `workflow_dispatch` capture per provider (`--capture sgo` requests the next 24 h with the production `limit=50` + pagination). Verify: returned bookmaker IDs, presence of `1h`/`1q` oddIDs and props, presence of `openOdds/closeOdds`, actual object usage vs `/account/usage`, raw + parquet + log rows in the data repo, key absent from all artifacts.
 4. Enable cron-job.org. Preseason games (if listed by the providers) are the burn-in before opening night.
 
 ## Out of scope (follow-ups)

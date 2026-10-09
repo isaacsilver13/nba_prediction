@@ -17,6 +17,7 @@ from . import flatten, providers, schedule, store
 UTC = timezone.utc
 SGO_OBJECT_STOP = 2300
 ODDSAPI_CREDIT_STOP = 450
+SGO_PAGE_LIMIT = 50
 ODDSAPI_ODDS_COST = 3   # h2h,spreads,totals x region us
 SCHEDULE_MAX_AGE = timedelta(hours=2)
 EVENTS_ENDPOINT = "/v4/sports/basketball_nba/events"
@@ -78,7 +79,7 @@ def refresh_schedule(root: Path, d: date, now: datetime) -> tuple[dict, int]:
 
 
 def capture(root: Path, slot: schedule.Slot, now: datetime, log: list[dict],
-            paginate: bool = True, limit: int = 50) -> int:
+            paginate: bool = True, limit: int = SGO_PAGE_LIMIT) -> int:
     rid = uuid.uuid4().hex
     row = _row(slot, now, request_id=rid)
     after = slot.starts_after if slot.finalized else max(slot.starts_after, now)   # never in-play games
@@ -157,7 +158,7 @@ def manual_slot(kind: str, now: datetime) -> schedule.Slot:
         yday = today - timedelta(days=1)
         return schedule.Slot("sgo", yday, "manual-settle", now, now, schedule.ct(yday, 0), schedule.ct(today, 0),
                              finalized=True)
-    return schedule.Slot(kind, today, "manual", now, now, now, now + timedelta(days=7))
+    return schedule.Slot(kind, today, "manual", now, now, now, now + timedelta(days=1 if kind == "sgo" else 7))
 
 
 def rebuild_parquet(root: Path) -> int:
@@ -176,14 +177,14 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--dry-run", action="store_true", help="report missed/due slots; no network, no writes")
     g.add_argument("--run-due", action="store_true", help="capture every due slot (scheduled entry point)")
     g.add_argument("--capture", choices=["sgo", "sgo-settle", "oddsapi"],
-                   help="one manual smoke capture; ignores windows, keeps quota guards; SGO capped at 5 events")
+                   help="one manual smoke capture; ignores windows, keeps quota guards; SGO: games in the next 24h, same request shape as scheduled runs")
     g.add_argument("--rebuild-parquet", action="store_true", help="regenerate every .parquet from raw")
     a = p.parse_args(argv)
     root, now = store.data_root(), utcnow()
     if a.rebuild_parquet:
         return rebuild_parquet(root)
     if a.capture:
-        return capture(root, manual_slot(a.capture, now), now, store.read_log(root), paginate=False, limit=5)
+        return capture(root, manual_slot(a.capture, now), now, store.read_log(root))
     return run_due(root, now, dry_run=a.dry_run)
 
 

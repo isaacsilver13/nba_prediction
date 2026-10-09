@@ -497,11 +497,13 @@ def test_malformed_event_from_events_endpoint_is_dropped(tmp_path, monkeypatch):
     assert rc == 0 and set(sched["events"]) == {"OA2"}
 
 
-def test_manual_capture_caps_sgo_objects(tmp_path, monkeypatch):
+def test_manual_sgo_capture_uses_the_production_request_shape(tmp_path, monkeypatch):
     monkeypatch.setenv("NBA_DATA_DIR", str(tmp_path))
     calls = fake_providers(monkeypatch)
     assert cli.main(["--capture", "sgo"]) == 0
-    assert calls[0][1]["limit"] == "5" and calls[0][1]["_paginate"] is False
+    params = calls[0][1]
+    assert params["limit"] == "50" and params["_paginate"] is True
+    assert params["startsAfter"] == "2026-10-21T23:15:00Z" and params["startsBefore"] == "2026-10-22T23:15:00Z"
     assert store.read_log(tmp_path / "raw" / "odds")[0]["slot"] == "manual"
 
 

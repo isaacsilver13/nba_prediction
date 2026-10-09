@@ -30,7 +30,8 @@ laptop: git pull the data repo into $NBA_DATA_DIR/raw/odds
    gh workflow run odds-collector.yml -f mode=capture-sgo
    gh workflow run odds-collector.yml -f mode=capture-sgo-settle
    ```
-   `capture-sgo` asks for at most 5 upcoming events (≤ 5 of 2,500 monthly objects). Then pull the data repo
+   `capture-sgo` requests the next 24 hours of games exactly as a scheduled run does (about one night's games,
+   roughly 5-15 of 2,500 monthly objects; `capture-sgo-settle` costs about the same). Then pull the data repo
    and check: which `bookmaker_id`s appear, whether `period_id` includes `1h`/`1q`, whether player props appear,
    whether `open_odds`/`close_odds` are filled, and that no key appears anywhere (`git grep -i <first 6 chars>`).
 7. **cron-job.org** — create a second fine-grained token: *Only select repositories* → `nba_prediction`;
