@@ -1,0 +1,35 @@
+{
+  "success": true,
+  "nextCursor": null,
+  "data": [
+    {
+      "eventID": "EVT1",
+      "leagueID": "NBA",
+      "teams": {
+        "home": {"teamID": "LOS_ANGELES_LAKERS_NBA", "names": {"long": "Los Angeles Lakers"}},
+        "away": {"teamID": "BOSTON_CELTICS_NBA", "names": {"long": "Boston Celtics"}}
+      },
+      "status": {"startsAt": "2026-10-22T02:00:00.000Z"},
+      "odds": {
+        "points-home-game-sp-home": {"byBookmaker": {
+          "fanduel": {"odds": "-110", "spread": "-3.5", "available": true, "lastUpdatedAt": "2026-10-21T15:00:00.000Z",
+                      "openOdds": "-108", "openSpread": "-2.5", "closeOdds": "-112", "closeSpread": "-4"},
+          "draftkings": {"odds": "+100", "spread": "-3", "available": true, "lastUpdatedAt": "2026-10-21T14:55:00.000Z"}
+        }},
+        "points-all-1h-ou-over": {"byBookmaker": {
+          "betmgm": {"odds": "-115", "overUnder": "112.5", "available": true, "lastUpdatedAt": "2026-10-21T14:00:00.000Z"}
+        }},
+        "points+rebounds-LEBRON_JAMES_1_NBA-game-ou-under": {"byBookmaker": {
+          "caesars": {"odds": "-120", "overUnder": "33.5", "available": false, "lastUpdatedAt": "2026-10-21T13:00:00.000Z"}
+        }}
+      }
+    },
+    {"eventID": "EVT2"},
+    {
+      "eventID": "EVT3",
+      "teams": null,
+      "status": {"startsAt": "not-a-date"},
+      "odds": {"weird": {"byBookmaker": {"fanduel": {"odds": "N/A"}}}}
+    }
+  ]
+}

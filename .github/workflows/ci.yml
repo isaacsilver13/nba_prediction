@@ -21,3 +21,7 @@ jobs:
       - name: Check autoresearch paths
         run: |
           python -c "import autorun; assert autorun.REPO_ROOT == __import__('pathlib').Path.cwd().resolve()"
+      - name: Odds collector tests
+        run: |
+          pip install pyarrow pytest
+          python -m pytest tests/test_odds_collector.py -q
