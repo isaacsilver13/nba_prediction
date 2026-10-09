@@ -1,5 +1,7 @@
 """Tests for src.odds_collector — synthetic fixtures only; no test may touch the network."""
+import io
 import json
+import urllib.error
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -7,7 +9,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from src.odds_collector import schedule, store
+from src.odds_collector import providers, schedule, store
 from src.odds_collector.schedule import CT
 
 FIXTURES = Path(__file__).parent / "fixtures" / "odds_collector"
@@ -160,3 +162,72 @@ def test_dst_end_day_uses_local_wall_clock():
     assert sgo_open.opens.astimezone(UTC) == datetime(2026, 11, 1, 16, tzinfo=UTC)
     close = next(s for s in slots if s.key == ("sgo", "2026-11-01", "close@1900"))
     assert close.closes.astimezone(UTC) == datetime(2026, 11, 2, 0, 57, tzinfo=UTC)
+
+
+# --- providers -------------------------------------------------------------
+
+class FakeResp:
+    def __init__(self, body, status=200, headers=None):
+        self.status, self.headers, self._body = status, headers or {}, json.dumps(body).encode()
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_sgo_sends_key_in_header_and_paginates(monkeypatch):
+    monkeypatch.setenv("SGO_API_KEY", "SGOKEY123")
+    seen = []
+    pages = iter([FakeResp({"data": [{"eventID": "a"}], "nextCursor": "c2"}),
+                  FakeResp({"data": [{"eventID": "b"}], "nextCursor": None})])
+
+    def fake(req, timeout):
+        seen.append(req)
+        return next(pages)
+    monkeypatch.setattr(providers.urllib.request, "urlopen", fake)
+    r = providers.sgo_events({"leagueID": "NBA"})
+    assert r.status == 200 and [p["data"][0]["eventID"] for p in r.body] == ["a", "b"]
+    assert all("SGOKEY123" not in q.full_url for q in seen)
+    assert seen[0].get_header("X-api-key") == "SGOKEY123"
+    assert "cursor=c2" in seen[1].full_url
+
+
+def test_sgo_without_pagination_stops_after_first_page(monkeypatch):
+    monkeypatch.setenv("SGO_API_KEY", "SGOKEY123")
+    monkeypatch.setattr(providers.urllib.request, "urlopen",
+                        lambda req, timeout: FakeResp({"data": [{"eventID": "a"}], "nextCursor": "c2"}))
+    assert len(providers.sgo_events({}, paginate=False).body) == 1
+
+
+def test_http_error_text_is_redacted(monkeypatch):
+    monkeypatch.setenv("THE_ODDS_API_KEY", "ODDSKEY999")
+
+    def fake(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {"X-Requests-Used": "5"},
+                                     io.BytesIO(b"invalid key ODDSKEY999"))
+    monkeypatch.setattr(providers.urllib.request, "urlopen", fake)
+    r = providers.oddsapi_odds({"regions": "us"})
+    assert r.status == 401 and r.body is None
+    assert "ODDSKEY999" not in r.error and "***" in r.error
+    assert r.headers["x-requests-used"] == "5"
+
+
+def test_network_error_is_captured_not_raised(monkeypatch):
+    monkeypatch.setenv("THE_ODDS_API_KEY", "NETKEY")
+
+    def fake(req, timeout):
+        raise TimeoutError("timed out")
+    monkeypatch.setattr(providers.urllib.request, "urlopen", fake)
+    r = providers.oddsapi_events()
+    assert r.status is None and r.body is None and "TimeoutError" in r.error
+
+
+def test_missing_key_raises(monkeypatch):
+    monkeypatch.delenv("SGO_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="SGO_API_KEY"):
+        providers.sgo_events({})
