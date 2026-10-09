@@ -1,4 +1,5 @@
 """HTTP boundary for the odds providers. Keys come only from env and never leave this module unredacted."""
+import http.client
 import json
 import os
 import urllib.error
@@ -42,8 +43,15 @@ def _get(url: str, headers: dict, secret: str) -> Response:
     except urllib.error.HTTPError as e:   # before OSError: HTTPError is a URLError is an OSError
         body = e.read()[:300].decode("utf-8", "replace")
         return Response(e.code, _lower(e.headers), None, _redact(f"HTTP {e.code}: {body}", secret))
-    except (OSError, ValueError) as e:    # URLError, timeouts, malformed JSON
+    except (OSError, ValueError, http.client.HTTPException) as e:   # URLError, timeouts, bad JSON, truncated reads
         return Response(None, {}, None, _redact(f"{type(e).__name__}: {e}", secret))
+
+
+def _shape_error(r: Response, want: type) -> Response:
+    """A 200 whose JSON is the wrong shape is an error, not a crash in whoever reads the body."""
+    if r.body is None or isinstance(r.body, want):
+        return r
+    return r._replace(body=None, error=f"unexpected body: {type(r.body).__name__}")
 
 
 def sgo_events(params: dict, paginate: bool = True) -> Response:
@@ -52,9 +60,12 @@ def sgo_events(params: dict, paginate: bool = True) -> Response:
     pages, cursor = [], None
     while True:
         query = {**params, **({"cursor": cursor} if cursor else {})}
-        r = _get(f"{SGO_URL}?{urllib.parse.urlencode(query)}", {"x-api-key": key}, key)
+        r = _shape_error(_get(f"{SGO_URL}?{urllib.parse.urlencode(query)}", {"x-api-key": key}, key), dict)
         if r.body is None:
-            return r
+            if not pages:
+                return r
+            # earlier pages are already billed: keep them rather than discard
+            return r._replace(status=200, body=pages, error=f"partial: page {len(pages) + 1} failed: {r.error}")
         pages.append(r.body)
         cursor = r.body.get("nextCursor")
         if not (paginate and cursor):
@@ -64,9 +75,9 @@ def sgo_events(params: dict, paginate: bool = True) -> Response:
 def oddsapi_events() -> Response:
     """Quota-free schedule call; its headers still carry x-requests-used."""
     key = api_key("THE_ODDS_API_KEY")
-    return _get(f"{ODDSAPI_URL}/events?{urllib.parse.urlencode({'apiKey': key})}", {}, key)
+    return _shape_error(_get(f"{ODDSAPI_URL}/events?{urllib.parse.urlencode({'apiKey': key})}", {}, key), list)
 
 
 def oddsapi_odds(params: dict) -> Response:
     key = api_key("THE_ODDS_API_KEY")
-    return _get(f"{ODDSAPI_URL}/odds?{urllib.parse.urlencode({**params, 'apiKey': key})}", {}, key)
+    return _shape_error(_get(f"{ODDSAPI_URL}/odds?{urllib.parse.urlencode({**params, 'apiKey': key})}", {}, key), list)

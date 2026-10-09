@@ -1,4 +1,5 @@
 """Tests for src.odds_collector — synthetic fixtures only; no test may touch the network."""
+import http.client
 import io
 import json
 import urllib.error
@@ -231,6 +232,45 @@ def test_missing_key_raises(monkeypatch):
     monkeypatch.delenv("SGO_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="SGO_API_KEY"):
         providers.sgo_events({})
+
+
+def test_truncated_response_is_captured_not_raised(monkeypatch):
+    monkeypatch.setenv("THE_ODDS_API_KEY", "NETKEY")
+
+    def fake(req, timeout):
+        raise http.client.IncompleteRead(b"par")
+    monkeypatch.setattr(providers.urllib.request, "urlopen", fake)
+    r = providers.oddsapi_events()
+    assert r.status is None and r.body is None and "IncompleteRead" in r.error
+
+
+def test_sgo_keeps_earlier_pages_when_a_later_page_fails(monkeypatch):
+    monkeypatch.setenv("SGO_API_KEY", "SGOKEY123")
+    answers = iter([FakeResp({"data": [{"eventID": "a"}], "nextCursor": "c2"}), TimeoutError("slow")])
+
+    def fake(req, timeout):
+        a = next(answers)
+        if isinstance(a, Exception):
+            raise a
+        return a
+    monkeypatch.setattr(providers.urllib.request, "urlopen", fake)
+    r = providers.sgo_events({})
+    assert r.status == 200 and [p["data"][0]["eventID"] for p in r.body] == ["a"]
+    assert r.error.startswith("partial: page 2 failed: TimeoutError")
+
+
+def test_sgo_non_object_body_is_an_error(monkeypatch):
+    monkeypatch.setenv("SGO_API_KEY", "SGOKEY123")
+    monkeypatch.setattr(providers.urllib.request, "urlopen", lambda req, timeout: FakeResp([1, 2]))
+    r = providers.sgo_events({})
+    assert r.status == 200 and r.body is None and "list" in r.error
+
+
+def test_oddsapi_non_list_body_is_an_error(monkeypatch):
+    monkeypatch.setenv("THE_ODDS_API_KEY", "ODDSKEY999")
+    monkeypatch.setattr(providers.urllib.request, "urlopen", lambda req, timeout: FakeResp({"message": "x"}))
+    r = providers.oddsapi_odds({"regions": "us"})
+    assert r.status == 200 and r.body is None and "dict" in r.error
 
 
 # --- flatten ---------------------------------------------------------------
