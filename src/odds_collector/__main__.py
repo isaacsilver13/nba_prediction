@@ -122,7 +122,7 @@ def capture(root: Path, slot: schedule.Slot, now: datetime, log: list[dict],
     except Exception as e:   # raw is already safe; --rebuild-parquet can redo this after a fix
         row["error"] = f"flatten: {type(e).__name__}: {e}"
     store.append_log(root, {**row, "outcome": "ok", "payload_path": f"{stem}.json.gz"})
-    return 0
+    return 1 if row["error"] else 0   # data is saved, but a partial page set or flatten bug must reach the owner
 
 
 def run_due(root: Path, now: datetime, dry_run: bool = False) -> int:

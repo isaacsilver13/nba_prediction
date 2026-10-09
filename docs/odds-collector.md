@@ -61,7 +61,9 @@ oddsapi = pd.read_parquet(r"C:\...\data\raw\odds\oddsapi")
   (`ok`, `empty` = provider returned no games, `error`, `missed` = window passed without a capture,
   `skipped_quota`). A day with no rows at all means no run happened (trigger outage).
 - `python -m src.odds_collector --dry-run` (locally, after `git pull`) prints what is due/missed right now.
-- A failed workflow run means an auth error (401/403): a key was revoked or expired — replace the secret.
+- A failed workflow run means an auth error (401/403: replace the secret) or a capture that was saved but flagged:
+  `requests.csv` rows with `outcome=ok` and a non-empty `error` (`partial: ...` = a later SGO page failed,
+  `flatten: ...` = parquet could not be built; fix `flatten.py` then `--rebuild-parquet`). Data is still pushed.
 - Quota stops: SGO 2,300 objects per calendar month (counted from `requests.csv`); The Odds API 450 credits.
 - If SGO renames fields: fix `src/odds_collector/flatten.py`, then locally
   `python -m src.odds_collector --rebuild-parquet` and commit/push the data repo.

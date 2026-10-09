@@ -435,10 +435,21 @@ def test_flatten_failure_keeps_raw_and_logs_ok(tmp_path, monkeypatch):
     def boom(env):
         raise KeyError("payload")
     monkeypatch.setattr(flatten, "flatten", boom)
-    cli.run_due(tmp_path, NOW)
+    assert cli.run_due(tmp_path, NOW) == 1
     ok = [r for r in store.read_log(tmp_path) if r["outcome"] == "ok"]
     assert len(ok) == 2 and all(r["error"].startswith("flatten: KeyError") for r in ok)
     assert all((tmp_path / r["payload_path"]).exists() for r in ok)
+
+
+def test_partial_sgo_capture_is_kept_and_fails_the_run(tmp_path, monkeypatch):
+    seed_schedule(tmp_path)
+    page = load_fixture("sgo_events.json")
+    monkeypatch.setattr(providers, "sgo_events", lambda params, paginate=True: providers.Response(
+        200, {}, [page], "partial: page 2 failed: TimeoutError: slow"))
+    monkeypatch.setattr(providers, "oddsapi_odds", lambda params: providers.Response(200, {}, [], ""))
+    assert cli.run_due(tmp_path, NOW) == 1
+    sgo = [r for r in store.read_log(tmp_path) if r["provider"] == "sgo" and r["outcome"] == "ok"]
+    assert len(sgo) == 1 and sgo[0]["error"].startswith("partial:") and (tmp_path / sgo[0]["payload_path"]).exists()
 
 
 def test_quota_guards_skip_requests(tmp_path, monkeypatch):
