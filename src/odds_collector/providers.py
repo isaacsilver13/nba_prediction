@@ -10,6 +10,7 @@ from typing import NamedTuple
 SGO_URL = "https://api.sportsgameodds.com/v2/events"
 ODDSAPI_URL = "https://api.the-odds-api.com/v4/sports/basketball_nba"
 TIMEOUT = 20
+SGO_MAX_PAGES = 20   # a stuck cursor must not bill the free tier away page by page
 USER_AGENT = {"User-Agent": "nba-odds-collector/1.0"}   # default Python-urllib UA is often bot-blocked
 
 
@@ -57,7 +58,7 @@ def _shape_error(r: Response, want: type) -> Response:
 def sgo_events(params: dict, paginate: bool = True) -> Response:
     """GET /v2/events, following nextCursor. Success body is the list of page bodies."""
     key = api_key("SGO_API_KEY")
-    pages, cursor = [], None
+    pages, seen, cursor = [], set(), None
     while True:
         query = {**params, **({"cursor": cursor} if cursor else {})}
         r = _shape_error(_get(f"{SGO_URL}?{urllib.parse.urlencode(query)}", {"x-api-key": key}, key), dict)
@@ -70,6 +71,10 @@ def sgo_events(params: dict, paginate: bool = True) -> Response:
         cursor = r.body.get("nextCursor")
         if not (paginate and cursor):
             return r._replace(body=pages)
+        if cursor in seen or len(pages) >= SGO_MAX_PAGES:
+            why = f"partial: pagination stopped after page {len(pages)} (repeated cursor or page cap)"
+            return r._replace(body=pages, error=why)
+        seen.add(cursor)
 
 
 def oddsapi_events() -> Response:

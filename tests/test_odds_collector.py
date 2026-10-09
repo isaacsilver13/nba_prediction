@@ -272,6 +272,29 @@ def test_sgo_keeps_earlier_pages_when_a_later_page_fails(monkeypatch):
     assert r.error.startswith("partial: page 2 failed: TimeoutError")
 
 
+def test_sgo_stops_on_a_repeated_cursor(monkeypatch):
+    monkeypatch.setenv("SGO_API_KEY", "SGOKEY123")
+    calls = []
+
+    def fake(req, timeout):
+        calls.append(req.full_url)
+        if len(calls) > 5:
+            raise AssertionError("pagination did not stop")
+        return FakeResp({"data": [{"eventID": "a"}], "nextCursor": "same"})
+    monkeypatch.setattr(providers.urllib.request, "urlopen", fake)
+    r = providers.sgo_events({})
+    assert r.status == 200 and len(r.body) == 2 and r.error.startswith("partial: pagination stopped")
+
+
+def test_sgo_stops_at_the_page_cap(monkeypatch):
+    monkeypatch.setenv("SGO_API_KEY", "SGOKEY123")
+    n = iter(range(1000))
+    monkeypatch.setattr(providers.urllib.request, "urlopen",
+                        lambda req, timeout: FakeResp({"data": [], "nextCursor": f"c{next(n)}"}))
+    r = providers.sgo_events({})
+    assert len(r.body) == providers.SGO_MAX_PAGES and r.error.startswith("partial: pagination stopped")
+
+
 def test_sgo_non_object_body_is_an_error(monkeypatch):
     monkeypatch.setenv("SGO_API_KEY", "SGOKEY123")
     monkeypatch.setattr(providers.urllib.request, "urlopen", lambda req, timeout: FakeResp([1, 2]))
@@ -450,6 +473,28 @@ def test_partial_sgo_capture_is_kept_and_fails_the_run(tmp_path, monkeypatch):
     assert cli.run_due(tmp_path, NOW) == 1
     sgo = [r for r in store.read_log(tmp_path) if r["provider"] == "sgo" and r["outcome"] == "ok"]
     assert len(sgo) == 1 and sgo[0]["error"].startswith("partial:") and (tmp_path / sgo[0]["payload_path"]).exists()
+
+
+def test_multi_page_sgo_capture_counts_and_flattens_every_page(tmp_path, monkeypatch):
+    seed_schedule(tmp_path)
+    page = load_fixture("sgo_events.json")
+    monkeypatch.setattr(providers, "sgo_events", lambda params, paginate=True: providers.Response(200, {}, [page, page], ""))
+    monkeypatch.setattr(providers, "oddsapi_odds", lambda params: providers.Response(200, {}, [], ""))
+    assert cli.run_due(tmp_path, NOW) == 0
+    sgo = next(r for r in store.read_log(tmp_path) if r["provider"] == "sgo" and r["outcome"] == "ok")
+    assert sgo["objects"] == "6"
+    parquet = (tmp_path / sgo["payload_path"]).with_name(Path(sgo["payload_path"]).name.replace(".json.gz", ".parquet"))
+    assert pq.read_table(parquet).num_rows == 10
+
+
+def test_wrong_shape_sgo_response_is_logged_as_one_billed_object(tmp_path, monkeypatch):
+    seed_schedule(tmp_path)
+    monkeypatch.setattr(providers, "sgo_events", lambda params, paginate=True: providers.Response(
+        200, {}, None, "unexpected body: list"))
+    monkeypatch.setattr(providers, "oddsapi_odds", lambda params: providers.Response(200, {}, [], ""))
+    cli.run_due(tmp_path, NOW)
+    errs = [r for r in store.read_log(tmp_path) if r["provider"] == "sgo" and r["outcome"] == "error"]
+    assert len(errs) == 1 and errs[0]["objects"] == "1" and errs[0]["error"] == "unexpected body: list"
 
 
 def test_quota_guards_skip_requests(tmp_path, monkeypatch):

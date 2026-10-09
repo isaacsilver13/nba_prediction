@@ -51,13 +51,20 @@ def _quota(r: providers.Response) -> dict:
 
 
 def _rc(r: providers.Response) -> int:
-    """Auth failures fail the workflow run so GitHub emails the owner; everything else retries next tick."""
+    """Auth failures fail the workflow run so GitHub emails the owner; everything else retries next tick.
+
+    (capture() also returns 1 for saved-but-flagged captures: partial pages or a flatten error.)
+    """
     return 1 if r.status in (401, 403) else 0
 
 
 def _row(slot: schedule.Slot, now: datetime, **kw) -> dict:
     return {"provider": slot.provider, "slate_date": slot.slate_date.isoformat(), "slot": slot.name,
             "attempted_at_utc": iso(now), **kw}
+
+
+def _events_by_id(body: list) -> dict:
+    return {e["id"]: e for e in body if isinstance(e, dict) and e.get("id")}
 
 
 def refresh_schedule(root: Path, d: date, now: datetime) -> tuple[dict, int]:
@@ -69,7 +76,7 @@ def refresh_schedule(root: Path, d: date, now: datetime) -> tuple[dict, int]:
     ok = r.status == 200 and isinstance(r.body, list)
     if ok:
         # Merge, don't replace: started games drop out of /events but their slots must stay evaluable.
-        sched = {"fetched_at_utc": iso(now), "events": {**sched["events"], **{e["id"]: e for e in r.body if isinstance(e, dict) and e.get("id")}}}
+        sched = {"fetched_at_utc": iso(now), "events": {**sched["events"], **_events_by_id(r.body)}}
         store.atomic_write(_schedule_path(root, d), json.dumps(sched, indent=1, sort_keys=True).encode())
     store.append_log(root, {"request_id": uuid.uuid4().hex, "provider": "oddsapi", "slate_date": d.isoformat(),
                             "slot": "schedule", "attempted_at_utc": iso(now), "endpoint": EVENTS_ENDPOINT,
@@ -92,7 +99,8 @@ def capture(root: Path, slot: schedule.Slot, now: datetime, log: list[dict],
                   "startsAfter": iso(after), "startsBefore": iso(slot.starts_before),
                   **({"finalized": "true"} if slot.finalized else {"started": "false"})}
         r = providers.sgo_events(params, paginate)
-        objects = sum(len(page.get("data") or []) for page in r.body) if r.status == 200 else 0
+        # a 200 with an unusable body is still billed as one object
+        objects = sum(len(page.get("data") or []) for page in r.body) if r.body else int(r.status == 200)
     else:
         if store.oddsapi_used(log) + ODDSAPI_ODDS_COST > ODDSAPI_CREDIT_STOP:
             store.append_log(root, {**row, "outcome": "skipped_quota"})
@@ -101,7 +109,7 @@ def capture(root: Path, slot: schedule.Slot, now: datetime, log: list[dict],
         params = {"regions": "us", "markets": "h2h,spreads,totals", "oddsFormat": "american",
                   "commenceTimeFrom": iso(after), "commenceTimeTo": iso(slot.starts_before)}
         r = providers.oddsapi_odds(params)
-        objects = len(r.body) if r.status == 200 else 0
+        objects = len(r.body) if r.body else 0
     got = utcnow()   # when the odds were received; `now` is when the run started
     row.update(endpoint=endpoint, http_status=r.status, error=r.error, objects=objects, **_quota(r))
     if r.status != 200 or r.body is None:
