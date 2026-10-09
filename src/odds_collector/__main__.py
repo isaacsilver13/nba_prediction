@@ -31,8 +31,13 @@ def _schedule_path(root: Path, d: date) -> Path:
 
 
 def load_schedule(root: Path, d: date) -> dict:
-    p = _schedule_path(root, d)
-    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {"fetched_at_utc": None, "events": {}}
+    try:
+        sched = json.loads(_schedule_path(root, d).read_text(encoding="utf-8"))
+        if isinstance(sched["events"], dict):
+            return sched
+    except (OSError, ValueError, KeyError, TypeError):   # missing or corrupt: refetch /events and rebuild
+        pass
+    return {"fetched_at_utc": None, "events": {}}
 
 
 def _quota(r: providers.Response) -> dict:
@@ -59,7 +64,7 @@ def refresh_schedule(root: Path, d: date, now: datetime) -> tuple[dict, int]:
     ok = r.status == 200 and isinstance(r.body, list)
     if ok:
         # Merge, don't replace: started games drop out of /events but their slots must stay evaluable.
-        sched = {"fetched_at_utc": iso(now), "events": {**sched["events"], **{e["id"]: e for e in r.body}}}
+        sched = {"fetched_at_utc": iso(now), "events": {**sched["events"], **{e["id"]: e for e in r.body if isinstance(e, dict) and e.get("id")}}}
         store.atomic_write(_schedule_path(root, d), json.dumps(sched, indent=1, sort_keys=True).encode())
     store.append_log(root, {"request_id": uuid.uuid4().hex, "provider": "oddsapi", "slate_date": d.isoformat(),
                             "slot": "schedule", "attempted_at_utc": iso(now), "endpoint": EVENTS_ENDPOINT,

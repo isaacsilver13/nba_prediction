@@ -113,6 +113,14 @@ def test_slots_for_a_normal_night():
     assert (settle.starts_after, settle.starts_before) == (ct(2026, 10, 21, 0), ct(2026, 10, 22, 0))
 
 
+def test_slate_tips_skips_malformed_events():
+    good = ct(2026, 10, 21, 19)
+    events = [{"id": "no-time"}, {"commence_time": "garbage"}, {"commence_time": None},
+              {"commence_time": "2026-10-21T23:00:00"},   # naive: cannot be placed on the Central calendar
+              {"commence_time": good.isoformat()}]
+    assert schedule.slate_tips(events, D) == [good]
+
+
 def test_no_games_no_slots():
     assert schedule.slots_for(D, []) == []
 
@@ -438,6 +446,25 @@ def test_schedule_refresh_merges_by_event_id(tmp_path, monkeypatch):
     assert sched["events"]["OA2"]["commence_time"] == "2026-10-22T00:00:00Z"   # tip change picked up
     assert cli.load_schedule(tmp_path, date(2026, 10, 21)) == sched
     assert store.read_log(tmp_path)[-1]["quota_used"] == "20"
+
+
+def test_corrupt_schedule_cache_self_heals(tmp_path, monkeypatch):
+    path = tmp_path / "schedule" / "2026-10-21.json"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"fetched_at_utc": "2026-10-21T2', encoding="utf-8")   # truncated mid-write
+    monkeypatch.setattr(providers, "oddsapi_events",
+                        lambda: providers.Response(200, {}, load_fixture("oddsapi_events.json"), ""))
+    fake_providers(monkeypatch)
+    assert cli.run_due(tmp_path, NOW) == 0
+    assert set(cli.load_schedule(tmp_path, date(2026, 10, 21))["events"]) == {"OA1", "OA2"}
+
+
+def test_malformed_event_from_events_endpoint_is_dropped(tmp_path, monkeypatch):
+    good = {"id": "OA2", "commence_time": "2026-10-22T23:30:00Z", "home_team": "A", "away_team": "B"}
+    monkeypatch.setattr(providers, "oddsapi_events",
+                        lambda: providers.Response(200, {}, [good, {"commence_time": "x"}, "junk", None], ""))
+    sched, rc = cli.refresh_schedule(tmp_path, date(2026, 10, 21), NOW)
+    assert rc == 0 and set(sched["events"]) == {"OA2"}
 
 
 def test_manual_capture_caps_sgo_objects(tmp_path, monkeypatch):

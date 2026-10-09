@@ -40,9 +40,19 @@ def ct(d: date, hour: int, minute: int = 0) -> datetime:
 
 
 def slate_tips(events, d: date) -> list[datetime]:
-    """One tip per game (duplicates kept so group sizes count games), sorted, for Central date d."""
-    tips = (datetime.fromisoformat(e["commence_time"]) for e in events)
-    return sorted(t for t in tips if t.astimezone(CT).date() == d)
+    """One tip per game (duplicates kept so group sizes count games), sorted, for Central date d.
+
+    Events without a parseable timezone-aware commence_time are skipped: one bad cached event must not stop every run.
+    """
+    tips = []
+    for e in events:
+        try:
+            t = datetime.fromisoformat(e["commence_time"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if t.tzinfo is not None and t.astimezone(CT).date() == d:
+            tips.append(t)
+    return sorted(tips)
 
 
 def group_tips(tips: list[datetime]) -> list[list[datetime]]:
