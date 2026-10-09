@@ -7,7 +7,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from src.odds_collector import store
+from src.odds_collector import schedule, store
+from src.odds_collector.schedule import CT
 
 FIXTURES = Path(__file__).parent / "fixtures" / "odds_collector"
 UTC = timezone.utc
@@ -72,3 +73,90 @@ def test_parquet_with_no_rows_keeps_schema(tmp_path):
     schema = pa.schema([("a", pa.string()), ("b", pa.float64())])
     store.write_parquet(tmp_path / "x.parquet", [], schema)
     assert pq.read_table(tmp_path / "x.parquet").schema.equals(schema)
+
+
+# --- schedule --------------------------------------------------------------
+
+def ct(y, m, d, h, mi=0):
+    return datetime(y, m, d, h, mi, tzinfo=CT)
+
+
+D = date(2026, 10, 21)
+TIPS = [ct(2026, 10, 21, 18), ct(2026, 10, 21, 18), ct(2026, 10, 21, 18, 30), ct(2026, 10, 21, 21)]
+CAPPED_TIPS = ([ct(2026, 10, 21, 12)] + [ct(2026, 10, 21, 15)] * 2 + [ct(2026, 10, 21, 18)] * 3
+               + [ct(2026, 10, 21, 21)] * 2)
+
+
+def names(slots, provider=None):
+    return sorted(s.name for s in slots if provider in (None, s.provider))
+
+
+def test_slate_tips_filters_central_date_and_keeps_one_per_game():
+    events = [{"commence_time": "2026-10-21T23:00:00Z"}, {"commence_time": "2026-10-21T23:00:00Z"},
+              {"commence_time": "2026-10-22T02:00:00Z"},   # 21:00 CT, still the 21st's slate
+              {"commence_time": "2026-10-22T23:00:00Z"}]   # next slate
+    assert schedule.slate_tips(events, D) == [ct(2026, 10, 21, 18), ct(2026, 10, 21, 18), ct(2026, 10, 21, 21)]
+
+
+def test_slots_for_a_normal_night():
+    slots = schedule.slots_for(D, TIPS)
+    assert names(slots, "sgo") == ["close@1800", "close@1830", "close@2100", "open", "props", "settle"]
+    assert names(slots, "oddsapi") == ["close@1800", "close@2100", "open"]   # 18:00+18:30 share a call
+    c = next(s for s in slots if s.key == ("sgo", "2026-10-21", "close@1830"))
+    assert (c.opens, c.closes) == (ct(2026, 10, 21, 17, 50), ct(2026, 10, 21, 18, 27))
+    assert (c.starts_after, c.starts_before) == (ct(2026, 10, 21, 18, 25), ct(2026, 10, 21, 18, 35))
+    settle = next(s for s in slots if s.name == "settle")
+    assert settle.finalized and settle.opens == ct(2026, 10, 22, 10)
+    assert (settle.starts_after, settle.starts_before) == (ct(2026, 10, 21, 0), ct(2026, 10, 22, 0))
+
+
+def test_no_games_no_slots():
+    assert schedule.slots_for(D, []) == []
+
+
+def test_props_slot_skipped_when_every_game_tips_before_three():
+    assert "props" not in names(schedule.slots_for(D, [ct(2026, 10, 21, 11), ct(2026, 10, 21, 14, 30)]))
+
+
+def test_oddsapi_closes_capped_at_three_largest_groups():
+    closes = [s for s in schedule.slots_for(D, CAPPED_TIPS) if s.provider == "oddsapi" and s.name.startswith("close")]
+    assert {s.name: s.capped for s in closes} == {
+        "close@1200": True, "close@1500": False, "close@1800": False, "close@2100": False}
+
+
+def test_due_respects_window_done_and_failure_cap():
+    slots = schedule.slots_for(D, TIPS)
+    now = ct(2026, 10, 21, 17, 45)
+    assert names(schedule.due(slots, [], now)) == ["close@1800", "close@1800"]   # sgo + oddsapi
+    log = [{"provider": "sgo", "slate_date": "2026-10-21", "slot": "close@1800", "outcome": "ok"}]
+    assert [s.key for s in schedule.due(slots, log, now)] == [("oddsapi", "2026-10-21", "close@1800")]
+    log = [{"provider": "oddsapi", "slate_date": "2026-10-21", "slot": "close@1800", "outcome": o}
+           for o in ("error", "empty", "skipped_quota")]
+    assert [s.provider for s in schedule.due(slots, log, now)] == ["sgo"]
+
+
+def test_missed_reports_closed_windows_once():
+    slots = schedule.slots_for(D, TIPS)
+    now = ct(2026, 10, 21, 13)
+    assert sorted(s.key for s in schedule.missed(slots, [], now)) == [
+        ("oddsapi", "2026-10-21", "open"), ("sgo", "2026-10-21", "open")]
+    log = [{"provider": p, "slate_date": "2026-10-21", "slot": "open", "outcome": "missed"} for p in ("sgo", "oddsapi")]
+    assert schedule.missed(slots, log, now) == []
+
+
+def test_capped_slot_never_due_but_reported_missed():
+    slots = schedule.slots_for(D, CAPPED_TIPS)
+    capped = next(s for s in slots if s.capped)
+    assert capped not in schedule.due(slots, [], ct(2026, 10, 21, 11, 40))
+    assert capped in schedule.missed(slots, [], ct(2026, 10, 21, 12))
+
+
+def test_dst_end_day_uses_local_wall_clock():
+    d = date(2026, 11, 1)   # US DST ends 02:00 this morning
+    tips = schedule.slate_tips([{"commence_time": "2026-11-02T01:00:00Z"}], d)   # 19:00 CST
+    assert tips == [ct(2026, 11, 1, 19)]
+    slots = schedule.slots_for(d, tips)
+    sgo_open = next(s for s in slots if s.key == ("sgo", "2026-11-01", "open"))
+    assert sgo_open.opens.astimezone(UTC) == datetime(2026, 11, 1, 16, tzinfo=UTC)
+    close = next(s for s in slots if s.key == ("sgo", "2026-11-01", "close@1900"))
+    assert close.closes.astimezone(UTC) == datetime(2026, 11, 2, 0, 57, tzinfo=UTC)
