@@ -81,3 +81,8 @@ Calls the real `experiment.run_experiment()` (trains the configured models on lo
 `results.tsv` or `experiment.py`) while recording per-row predictions, bets and odds tiers, then writes a bundle via
 `capture_run`. It aborts if its ROI differs from `experiment.py`'s or its odds-join replica disagrees with `load_data`.
 Note `p_home` is P(home covers the spread) as `compute_roi` defines it, not P(home wins).
+
+## Odds collection
+
+Forward-only NBA odds snapshots (props, 1H/quarter lines, moneylines) are collected by
+`src/odds_collector` on GitHub Actions — setup and operations in [docs/odds-collector.md](docs/odds-collector.md).

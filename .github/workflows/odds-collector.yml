@@ -1,0 +1,62 @@
+name: Odds collector
+
+# Triggered every 5 min by cron-job.org via workflow_dispatch (precise timing); the schedule below is
+# only a backup. Every run is idempotent: it captures the slots that are due and nothing else.
+# Setup and operations: docs/odds-collector.md
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: What to run
+        type: choice
+        default: run-due
+        options: [run-due, dry-run, capture-sgo, capture-sgo-settle, capture-oddsapi]
+  schedule:
+    - cron: "17,47 14-23,0-4 * * *"
+
+concurrency:
+  group: odds-collector
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    # Inert until the data repo is configured (Settings -> Secrets and variables -> Actions -> Variables).
+    if: vars.ODDS_DATA_REPO != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out data repo (root files + schedule/ only)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.ODDS_DATA_REPO }}
+          token: ${{ secrets.ODDS_DATA_TOKEN }}
+          path: data/raw/odds
+          sparse-checkout: schedule
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pyarrow
+      - name: Collect
+        env:
+          MODE: ${{ inputs.mode || 'run-due' }}
+          SGO_API_KEY: ${{ secrets.SGO_API_KEY }}
+          THE_ODDS_API_KEY: ${{ secrets.THE_ODDS_API_KEY }}
+        run: |
+          case "$MODE" in
+            capture-*) python -m src.odds_collector --capture "${MODE#capture-}" ;;
+            *) python -m src.odds_collector "--$MODE" ;;
+          esac
+      - name: Push captures to data repo
+        if: ${{ !cancelled() }}
+        working-directory: data/raw/odds
+        run: |
+          git config user.name "odds-collector"
+          git config user.email "odds-collector@users.noreply.github.com"
+          git add --sparse -A
+          git diff --cached --quiet && exit 0
+          git commit -q -m "capture $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push -q || { git pull -q --rebase && git push -q; }
