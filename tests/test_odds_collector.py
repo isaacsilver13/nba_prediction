@@ -24,6 +24,11 @@ def no_network(monkeypatch):
     monkeypatch.setattr("urllib.request.urlopen", refuse)
 
 
+@pytest.fixture(autouse=True)
+def fixed_clock(monkeypatch):
+    monkeypatch.setattr(cli, "utcnow", lambda: NOW)   # NOW is defined in the CLI section; looked up at call time
+
+
 # --- store -----------------------------------------------------------------
 
 def test_data_root_honours_env(tmp_path, monkeypatch):
@@ -389,6 +394,20 @@ def test_run_due_captures_logs_and_is_idempotent(tmp_path, monkeypatch):
     n = len(calls)
     assert cli.run_due(tmp_path, NOW + timedelta(minutes=5)) == 0
     assert len(calls) == n and len(store.read_log(tmp_path)) == 5
+
+
+def test_captured_at_is_response_time_not_run_start(tmp_path, monkeypatch):
+    seed_schedule(tmp_path)
+    fake_providers(monkeypatch)
+    later = NOW + timedelta(seconds=90)
+    monkeypatch.setattr(cli, "utcnow", lambda: later)
+    cli.run_due(tmp_path, NOW)
+    oks = [r for r in store.read_log(tmp_path) if r["outcome"] == "ok"]
+    assert len(oks) == 2
+    for r in oks:
+        assert r["attempted_at_utc"] == cli.iso(NOW)
+        assert store.read_raw(tmp_path / r["payload_path"])["captured_at_utc"] == cli.iso(later)
+        assert cli.iso(later).replace(":", "-") in r["payload_path"]
 
 
 def test_dry_run_reports_without_network_or_writes(tmp_path, capsys):

@@ -26,6 +26,10 @@ def iso(dt: datetime) -> str:
     return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
 def _schedule_path(root: Path, d: date) -> Path:
     return root / "schedule" / f"{d.isoformat()}.json"
 
@@ -97,6 +101,7 @@ def capture(root: Path, slot: schedule.Slot, now: datetime, log: list[dict],
                   "commenceTimeFrom": iso(after), "commenceTimeTo": iso(slot.starts_before)}
         r = providers.oddsapi_odds(params)
         objects = len(r.body) if r.status == 200 else 0
+    got = utcnow()   # when the odds were received; `now` is when the run started
     row.update(endpoint=endpoint, http_status=r.status, error=r.error, objects=objects, **_quota(r))
     if r.status != 200 or r.body is None:
         store.append_log(root, {**row, "outcome": "error"})
@@ -105,9 +110,9 @@ def capture(root: Path, slot: schedule.Slot, now: datetime, log: list[dict],
         store.append_log(root, {**row, "outcome": "empty", "objects": 1 if slot.provider == "sgo" else 0})
         return 0
     stem = (f"{slot.provider}/date={slot.slate_date.isoformat()}/"
-            f"{now.astimezone(UTC):%Y-%m-%dT%H-%M-%SZ}_{slot.name}_{rid}")
+            f"{got:%Y-%m-%dT%H-%M-%SZ}_{slot.name}_{rid}")
     env = {"request_id": rid, "provider": slot.provider, "slot": slot.name,
-           "slate_date": slot.slate_date.isoformat(), "captured_at_utc": iso(now),
+           "slate_date": slot.slate_date.isoformat(), "captured_at_utc": iso(got),
            "request": {"endpoint": endpoint, "params": params}, "http_status": r.status,
            "headers": r.headers, "payload": r.body}
     store.write_raw(root / f"{stem}.json.gz", env)
@@ -174,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
                    help="one manual smoke capture; ignores windows, keeps quota guards; SGO capped at 5 events")
     g.add_argument("--rebuild-parquet", action="store_true", help="regenerate every .parquet from raw")
     a = p.parse_args(argv)
-    root, now = store.data_root(), datetime.now(UTC)
+    root, now = store.data_root(), utcnow()
     if a.rebuild_parquet:
         return rebuild_parquet(root)
     if a.capture:
