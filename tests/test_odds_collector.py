@@ -9,7 +9,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from src.odds_collector import flatten, providers, schedule, store
+from src.odds_collector import __main__ as cli, flatten, providers, schedule, store
 from src.odds_collector.schedule import CT
 
 FIXTURES = Path(__file__).parent / "fixtures" / "odds_collector"
@@ -291,3 +291,130 @@ def test_flattened_rows_write_to_parquet(tmp_path):
     store.write_parquet(tmp_path / "x.parquet", rows, schema)
     table = pq.read_table(tmp_path / "x.parquet")
     assert table.num_rows == 5 and table.schema.equals(flatten.SGO_SCHEMA)
+
+
+# --- CLI -------------------------------------------------------------------
+
+NOW = datetime(2026, 10, 21, 23, 15, tzinfo=UTC)   # 18:15 CT: OA2 tips 18:30, OA1 tips 21:00
+
+
+def seed_schedule(root, fetched=NOW):
+    events = load_fixture("oddsapi_events.json")
+    store.atomic_write(root / "schedule" / "2026-10-21.json",
+                       json.dumps({"fetched_at_utc": cli.iso(fetched), "events": {e["id"]: e for e in events}}).encode())
+
+
+def fake_providers(monkeypatch, status=200):
+    page, odds, calls = load_fixture("sgo_events.json"), load_fixture("oddsapi_odds.json"), []
+    ok = status == 200
+
+    def sgo(params, paginate=True):
+        calls.append(("sgo", {**params, "_paginate": paginate}))
+        return providers.Response(status, {}, [page] if ok else None, "" if ok else f"HTTP {status}")
+
+    def oddsapi(params):
+        calls.append(("oddsapi", params))
+        return providers.Response(status, {"x-requests-used": "12", "x-requests-remaining": "488"},
+                                  odds if ok else None, "" if ok else f"HTTP {status}")
+    monkeypatch.setattr(providers, "sgo_events", sgo)
+    monkeypatch.setattr(providers, "oddsapi_odds", oddsapi)
+    return calls
+
+
+def test_run_due_captures_logs_and_is_idempotent(tmp_path, monkeypatch):
+    seed_schedule(tmp_path)
+    calls = fake_providers(monkeypatch)
+    assert cli.run_due(tmp_path, NOW) == 0
+    log = store.read_log(tmp_path)
+    assert sorted((r["provider"], r["slot"], r["outcome"]) for r in log) == [
+        ("oddsapi", "close@1830", "ok"), ("oddsapi", "open", "missed"),
+        ("sgo", "close@1830", "ok"), ("sgo", "open", "missed"), ("sgo", "props", "missed")]
+    sgo_row = next(r for r in log if r["provider"] == "sgo" and r["outcome"] == "ok")
+    assert sgo_row["objects"] == "3" and sgo_row["error"] == ""
+    raw = tmp_path / sgo_row["payload_path"]
+    env = store.read_raw(raw)
+    assert env["request"]["params"]["startsAfter"] == "2026-10-21T23:25:00Z"
+    assert env["request"]["params"]["started"] == "false"
+    assert pq.read_table(raw.with_name(raw.name.replace(".json.gz", ".parquet"))).num_rows == 5
+    oddsapi_params = next(p for who, p in calls if who == "oddsapi")
+    assert oddsapi_params["commenceTimeFrom"] == "2026-10-21T23:15:00Z"   # never in-play games
+    n = len(calls)
+    assert cli.run_due(tmp_path, NOW + timedelta(minutes=5)) == 0
+    assert len(calls) == n and len(store.read_log(tmp_path)) == 5
+
+
+def test_dry_run_reports_without_network_or_writes(tmp_path, capsys):
+    seed_schedule(tmp_path, fetched=NOW - timedelta(hours=5))   # stale: a real run would refetch
+    before = {p: p.stat().st_mtime_ns for p in tmp_path.rglob("*")}
+    assert cli.run_due(tmp_path, NOW, dry_run=True) == 0
+    out = capsys.readouterr().out
+    assert "due sgo 2026-10-21 close@1830" in out and "missed sgo 2026-10-21 open" in out and "stale" in out
+    assert {p: p.stat().st_mtime_ns for p in tmp_path.rglob("*")} == before
+
+
+def test_auth_failure_exits_nonzero_and_logs_error(tmp_path, monkeypatch):
+    seed_schedule(tmp_path)
+    fake_providers(monkeypatch, status=401)
+    assert cli.run_due(tmp_path, NOW) == 1
+    errors = [r for r in store.read_log(tmp_path) if r["outcome"] == "error"]
+    assert {r["provider"] for r in errors} == {"sgo", "oddsapi"} and all(r["http_status"] == "401" for r in errors)
+    assert not list(tmp_path.glob("*/date=*/*"))
+
+
+def test_flatten_failure_keeps_raw_and_logs_ok(tmp_path, monkeypatch):
+    seed_schedule(tmp_path)
+    fake_providers(monkeypatch)
+
+    def boom(env):
+        raise KeyError("payload")
+    monkeypatch.setattr(flatten, "flatten", boom)
+    cli.run_due(tmp_path, NOW)
+    ok = [r for r in store.read_log(tmp_path) if r["outcome"] == "ok"]
+    assert len(ok) == 2 and all(r["error"].startswith("flatten: KeyError") for r in ok)
+    assert all((tmp_path / r["payload_path"]).exists() for r in ok)
+
+
+def test_quota_guards_skip_requests(tmp_path, monkeypatch):
+    seed_schedule(tmp_path)
+    calls = fake_providers(monkeypatch)
+    store.append_log(tmp_path, {"provider": "sgo", "attempted_at_utc": "2026-10-01T15:00:00Z", "objects": 2300,
+                                "slot": "old", "outcome": "ok"})
+    store.append_log(tmp_path, {"provider": "oddsapi", "attempted_at_utc": "2026-10-21T20:00:00Z", "quota_used": 448,
+                                "slot": "schedule", "outcome": "ok"})
+    cli.run_due(tmp_path, NOW)
+    assert calls == []
+    assert sorted(r["provider"] for r in store.read_log(tmp_path) if r["outcome"] == "skipped_quota") == [
+        "oddsapi", "sgo"]
+
+
+def test_schedule_refresh_merges_by_event_id(tmp_path, monkeypatch):
+    seed_schedule(tmp_path, fetched=NOW - timedelta(hours=3))
+    moved = {"id": "OA2", "commence_time": "2026-10-22T00:00:00Z",
+             "home_team": "New York Knicks", "away_team": "Cleveland Cavaliers"}
+    monkeypatch.setattr(providers, "oddsapi_events",
+                        lambda: providers.Response(200, {"x-requests-used": "20"}, [moved], ""))
+    sched, rc = cli.refresh_schedule(tmp_path, date(2026, 10, 21), NOW)
+    assert rc == 0 and set(sched["events"]) == {"OA1", "OA2"}            # OA1 dropped by provider, kept
+    assert sched["events"]["OA2"]["commence_time"] == "2026-10-22T00:00:00Z"   # tip change picked up
+    assert cli.load_schedule(tmp_path, date(2026, 10, 21)) == sched
+    assert store.read_log(tmp_path)[-1]["quota_used"] == "20"
+
+
+def test_manual_capture_caps_sgo_objects(tmp_path, monkeypatch):
+    monkeypatch.setenv("NBA_DATA_DIR", str(tmp_path))
+    calls = fake_providers(monkeypatch)
+    assert cli.main(["--capture", "sgo"]) == 0
+    assert calls[0][1]["limit"] == "5" and calls[0][1]["_paginate"] is False
+    assert store.read_log(tmp_path / "raw" / "odds")[0]["slot"] == "manual"
+
+
+def test_rebuild_parquet_matches_original(tmp_path, monkeypatch):
+    seed_schedule(tmp_path)
+    fake_providers(monkeypatch)
+    cli.run_due(tmp_path, NOW)
+    paths = sorted(tmp_path.glob("*/date=*/*.parquet"))
+    before = [pq.read_table(p) for p in paths]
+    for p in paths:
+        p.unlink()
+    assert cli.rebuild_parquet(tmp_path) == 0
+    assert len(paths) == 2 and all(pq.read_table(p).equals(t) for p, t in zip(paths, before))

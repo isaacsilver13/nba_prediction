@@ -32,7 +32,7 @@ def atomic_write(path: Path, data: bytes) -> None:
 
 
 def write_raw(path: Path, envelope: dict) -> None:
-    atomic_write(path, gzip.compress(json.dumps(envelope, sort_keys=True).encode(), mtime=0))
+    atomic_write(path, gzip.compress(json.dumps(envelope).encode(), mtime=0))
 
 
 def read_raw(path: Path) -> dict:
