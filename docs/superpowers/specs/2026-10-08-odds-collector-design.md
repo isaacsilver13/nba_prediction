@@ -111,7 +111,7 @@ A slot is **due** when `now` is inside its window and the log has no `ok` row fo
 | `open` | 10:00–12:00 |
 | `close@HHMM` per tip *group* | first tip of group −40 → −3 min |
 
-Tip groups: sorted tip times merged while within 30 min of the group's first tip. At most **3 close slots/day**; if more groups exist, keep the 3 with the most games, the rest are logged `missed`. Max 12 credits/day (~370/month). **Guard: no `/odds` request when `x-requests-used` (from the `/events` call made in the same run) ≥ 450** → `skipped_quota`.
+Tip groups: sorted tip times merged while within 30 min of the group's first tip. At most **3 close slots/day**; if more groups exist, keep the 3 with the most games, the rest are logged `missed`. Max 12 credits/day (~370/month). **Guard: no `/odds` request when the latest `x-requests-used` in `requests.csv` + 3 > 450** → `skipped_quota`. Every Odds API call logs that header, including the free `/events` refresh (≤ 2 h old), so the value is near-live and picks up the provider's monthly reset. `/odds` requests use `commenceTimeFrom = max(slate start, now)` so in-play games are never captured as pre-game.
 
 The free SGO tier lags ≤ 10 min, so an SGO close is effectively ~20–30 min pre-tip; `captured_at_utc` and `minutes_to_tip` make this explicit.
 
@@ -145,8 +145,8 @@ CI (`.github/workflows/ci.yml`) is extended to run `pytest tests/test_odds_colle
 
 1. Implement on branch, open PR.
 2. User creates: SGO account/key, Odds API key, private data repo, `ODDS_DATA_TOKEN`, repo secrets, cron-job.org job + dispatch token (steps in `docs/odds-collector.md`).
-3. **After explicit user approval:** one manual `workflow_dispatch` capture per provider. Verify: returned bookmaker IDs, presence of `1h`/`1q` oddIDs and props, presence of `openOdds/closeOdds`, actual object usage vs `/account/usage`, raw + parquet + log rows in the data repo, key absent from all artifacts.
-4. Merge; enable cron-job.org. Preseason games are the burn-in before opening night.
+3. Merge (GitHub only dispatches workflows that exist on the default branch; the job is skipped until the `ODDS_DATA_REPO` variable is set, so merging is inert). **After explicit user approval:** one manual `workflow_dispatch` capture per provider (`--capture sgo` is capped at `limit=5` events). Verify: returned bookmaker IDs, presence of `1h`/`1q` oddIDs and props, presence of `openOdds/closeOdds`, actual object usage vs `/account/usage`, raw + parquet + log rows in the data repo, key absent from all artifacts.
+4. Enable cron-job.org. Preseason games (if listed by the providers) are the burn-in before opening night.
 
 ## Out of scope (follow-ups)
 
