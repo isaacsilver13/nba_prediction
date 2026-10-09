@@ -7,3 +7,4 @@ xgboost
 streamlit
 plotly
 openai
+pyarrow
