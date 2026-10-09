@@ -53,6 +53,8 @@ def _row(slot: schedule.Slot, now: datetime, **kw) -> dict:
 def refresh_schedule(root: Path, d: date, now: datetime) -> tuple[dict, int]:
     """Fetch the quota-free /events list, merge it by event id into the day's cache, and log the call."""
     sched = load_schedule(root, d)
+    if not sched["events"]:   # first fetch of the day: games that already tipped are gone from /events,
+        sched["events"] = load_schedule(root, d - timedelta(days=1))["events"]   # yesterday's list had them
     r = providers.oddsapi_events()
     ok = r.status == 200 and isinstance(r.body, list)
     if ok:

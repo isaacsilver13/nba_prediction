@@ -8,7 +8,7 @@ from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 CT = ZoneInfo("America/Chicago")
-CLOSE_OPENS = timedelta(minutes=40)   # close window opens this long before tip...
+CLOSE_OPENS = timedelta(minutes=20)   # close window opens this long before tip (first tick captures)...
 CLOSE_ENDS = timedelta(minutes=3)     # ...and ends this long before tip
 SGO_TIP_PAD = timedelta(minutes=5)    # an SGO close requests games starting within tip +/- this
 GROUP_SPAN = timedelta(minutes=30)    # Odds API: tips this close to a group's first tip share one call

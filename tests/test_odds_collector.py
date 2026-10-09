@@ -105,7 +105,7 @@ def test_slots_for_a_normal_night():
     assert names(slots, "sgo") == ["close@1800", "close@1830", "close@2100", "open", "props", "settle"]
     assert names(slots, "oddsapi") == ["close@1800", "close@2100", "open"]   # 18:00+18:30 share a call
     c = next(s for s in slots if s.key == ("sgo", "2026-10-21", "close@1830"))
-    assert (c.opens, c.closes) == (ct(2026, 10, 21, 17, 50), ct(2026, 10, 21, 18, 27))
+    assert (c.opens, c.closes) == (ct(2026, 10, 21, 18, 10), ct(2026, 10, 21, 18, 27))   # tip-20 -> tip-3
     assert (c.starts_after, c.starts_before) == (ct(2026, 10, 21, 18, 25), ct(2026, 10, 21, 18, 35))
     settle = next(s for s in slots if s.name == "settle")
     assert settle.finalized and settle.opens == ct(2026, 10, 22, 10)
@@ -418,3 +418,15 @@ def test_rebuild_parquet_matches_original(tmp_path, monkeypatch):
         p.unlink()
     assert cli.rebuild_parquet(tmp_path) == 0
     assert len(paths) == 2 and all(pq.read_table(p).equals(t) for p, t in zip(paths, before))
+
+
+def test_outage_before_first_run_still_logs_started_games_missed(tmp_path, monkeypatch):
+    # Yesterday's cache already listed today's noon game; no run happened until after it tipped,
+    # so today's first /events call no longer returns it. Its slots must surface as missed.
+    noon = {"id": "EARLY", "commence_time": "2026-10-21T17:00:00Z", "home_team": "A", "away_team": "B"}
+    store.atomic_write(tmp_path / "schedule" / "2026-10-20.json",
+                       json.dumps({"fetched_at_utc": "2026-10-20T15:00:00Z", "events": {"EARLY": noon}}).encode())
+    monkeypatch.setattr(providers, "oddsapi_events", lambda: providers.Response(200, {}, [], ""))
+    cli.run_due(tmp_path, datetime(2026, 10, 21, 19, 30, tzinfo=UTC))   # 14:30 CT
+    missed = {r["slot"] for r in store.read_log(tmp_path) if r["outcome"] == "missed"}
+    assert {"close@1200", "open"} <= missed

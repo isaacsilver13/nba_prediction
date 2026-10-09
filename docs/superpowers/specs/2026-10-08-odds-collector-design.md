@@ -99,7 +99,7 @@ A slot is **due** when `now` is inside its window and the log has no `ok` row fo
 |---|---|---|---|
 | `open` | 10:00–12:00 | slate start range, `started=false` | early full-game + period lines |
 | `props` | 15:00–17:00 | slate start range, `started=false` | props mostly posted by mid-afternoon |
-| `close@HHMM` (one per distinct tip time) | tip−40 → tip−3 min | `startsAfter=tip−5m`, `startsBefore=tip+5m` | near-close, after most lineup news |
+| `close@HHMM` (one per distinct tip time) | tip−20 → tip−3 min (captured on the first tick, ≈ tip−20) | `startsAfter=tip−5m`, `startsBefore=tip+5m` | near-close, after most lineup news |
 | `settle` | next day 10:00–12:00 | previous slate range, `finalized=true` | tests free-tier `closeOdds`; final results for prop settlement |
 
 ≈ 4 objects/game/day → ~850/month at peak. **Guard: no SGO request when month-to-date `objects` (UTC calendar month, from `requests.csv`) ≥ 2,300** → `skipped_quota`. A response with zero events is `empty` (retried).
@@ -109,7 +109,7 @@ A slot is **due** when `now` is inside its window and the log has no `ok` row fo
 | Slot | Window (CT) |
 |---|---|
 | `open` | 10:00–12:00 |
-| `close@HHMM` per tip *group* | first tip of group −40 → −3 min |
+| `close@HHMM` per tip *group* | first tip of group −20 → −3 min |
 
 Tip groups: sorted tip times merged while within 30 min of the group's first tip. At most **3 close slots/day**; if more groups exist, keep the 3 with the most games, the rest are logged `missed`. Max 12 credits/day (~370/month). **Guard: no `/odds` request when the latest `x-requests-used` in `requests.csv` + 3 > 450** → `skipped_quota`. Every Odds API call logs that header, including the free `/events` refresh (≤ 2 h old), so the value is near-live and picks up the provider's monthly reset. `/odds` requests use `commenceTimeFrom = max(slate start, now)` so in-play games are never captured as pre-game.
 
@@ -155,6 +155,6 @@ Kalshi (separate session), Illinois-book filtering, game-ID joins/adapters, de-v
 ## Risks
 
 - Free tiers can change limits or books mid-season → quota guards + per-run log; the smoke test re-verifies before launch.
-- GitHub Actions / cron-job.org outage → backup cron; outages surface as `missed` rows rather than mislabeled data.
+- GitHub Actions / cron-job.org outage → backup cron (every 30 min, so it can miss a 17-min close window); outages surface as `missed` rows rather than mislabeled data. On the first fetch of a day the schedule cache is seeded from yesterday's, so games that tipped during an outage still get `missed` rows.
 - Data repo growth (~0.5–1 GB/season, gzip + parquet) — within GitHub's soft limit; sparse checkout keeps runs fast.
 - SGO start times may differ from The Odds API's by a few minutes → ±5 min close filter; zero-event responses are `empty` and retried.
