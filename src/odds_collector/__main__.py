@@ -70,6 +70,10 @@ def _events_by_id(body: list) -> dict:
 def refresh_schedule(root: Path, d: date, now: datetime) -> tuple[dict, int]:
     """Fetch the quota-free /events list, merge it by event id into the day's cache, and log the call."""
     sched = load_schedule(root, d)
+    if sched["fetched_at_utc"] is None and _schedule_path(root, d).exists():   # unreadable cache: say so in the audit log
+        store.append_log(root, {"request_id": uuid.uuid4().hex, "provider": "oddsapi", "slate_date": d.isoformat(),
+                                "slot": "schedule", "attempted_at_utc": iso(now), "outcome": "error",
+                                "error": f"corrupt schedule cache {_schedule_path(root, d).name}, rebuilding"})
     if not sched["events"]:   # first fetch of the day: games that already tipped are gone from /events,
         sched["events"] = load_schedule(root, d - timedelta(days=1))["events"]   # yesterday's list had them
     r = providers.oddsapi_events()

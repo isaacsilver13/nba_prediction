@@ -534,6 +534,17 @@ def test_corrupt_schedule_cache_self_heals(tmp_path, monkeypatch):
     assert set(cli.load_schedule(tmp_path, date(2026, 10, 21))["events"]) == {"OA1", "OA2"}
 
 
+def test_corrupt_schedule_cache_is_logged_even_when_the_refetch_fails(tmp_path, monkeypatch):
+    path = tmp_path / "schedule" / "2026-10-21.json"
+    path.parent.mkdir(parents=True)
+    path.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(providers, "oddsapi_events", lambda: providers.Response(None, {}, None, "URLError: down"))
+    cli.run_due(tmp_path, NOW)
+    notes = [r["error"] for r in store.read_log(tmp_path) if r["slot"] == "schedule"]
+    assert any(n.startswith("corrupt schedule cache 2026-10-21.json") for n in notes)
+    assert any(n == "URLError: down" for n in notes)
+
+
 def test_malformed_event_from_events_endpoint_is_dropped(tmp_path, monkeypatch):
     good = {"id": "OA2", "commence_time": "2026-10-22T23:30:00Z", "home_team": "A", "away_team": "B"}
     monkeypatch.setattr(providers, "oddsapi_events",
