@@ -9,7 +9,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from src.odds_collector import providers, schedule, store
+from src.odds_collector import flatten, providers, schedule, store
 from src.odds_collector.schedule import CT
 
 FIXTURES = Path(__file__).parent / "fixtures" / "odds_collector"
@@ -231,3 +231,63 @@ def test_missing_key_raises(monkeypatch):
     monkeypatch.delenv("SGO_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="SGO_API_KEY"):
         providers.sgo_events({})
+
+
+# --- flatten ---------------------------------------------------------------
+
+def load_fixture(name):
+    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+
+
+def sgo_env():
+    return {"request_id": "rid1", "provider": "sgo", "slot": "open", "captured_at_utc": "2026-10-21T15:00:00Z",
+            "payload": [load_fixture("sgo_events.json")]}
+
+
+def test_parse_odd_id_handles_players_and_combo_stats():
+    assert flatten.parse_odd_id("points+rebounds-LEBRON_JAMES_1_NBA-game-ou-under") == (
+        "points+rebounds", "LEBRON_JAMES_1_NBA", "game", "ou", "under")
+    assert flatten.parse_odd_id("points-all-1h-ou-over") == ("points", "all", "1h", "ou", "over")
+    assert flatten.parse_odd_id("garbage") == (None,) * 5
+
+
+def test_sgo_rows():
+    rows, schema = flatten.flatten(sgo_env())
+    assert schema is flatten.SGO_SCHEMA and len(rows) == 5   # EVT1: 4, EVT2 (no odds): 0, EVT3 (junk): 1
+    fd = next(r for r in rows if r["bookmaker_id"] == "fanduel" and r["event_id"] == "EVT1")
+    assert fd == {
+        "request_id": "rid1", "slot": "open", "captured_at_utc": "2026-10-21T15:00:00Z", "minutes_to_tip": 660.0,
+        "event_id": "EVT1", "starts_at_utc": "2026-10-22T02:00:00.000Z",
+        "home_team": "Los Angeles Lakers", "away_team": "Boston Celtics",
+        "odd_id": "points-home-game-sp-home", "stat_id": "points", "stat_entity_id": "home", "period_id": "game",
+        "bet_type_id": "sp", "side_id": "home", "bookmaker_id": "fanduel",
+        "odds_american": -110.0, "line": -3.5, "available": True, "last_updated_at": "2026-10-21T15:00:00.000Z",
+        "open_odds": -108.0, "open_line": -2.5, "close_odds": -112.0, "close_line": -4.0}
+    dk = next(r for r in rows if r["bookmaker_id"] == "draftkings")
+    assert dk["odds_american"] == 100.0 and dk["open_odds"] is None and dk["close_line"] is None
+    half = next(r for r in rows if r["bookmaker_id"] == "betmgm")
+    assert (half["period_id"], half["stat_entity_id"], half["line"]) == ("1h", "all", 112.5)
+    prop = next(r for r in rows if r["bookmaker_id"] == "caesars")
+    assert (prop["stat_id"], prop["stat_entity_id"], prop["line"], prop["available"]) == (
+        "points+rebounds", "LEBRON_JAMES_1_NBA", 33.5, False)
+    junk = next(r for r in rows if r["event_id"] == "EVT3")
+    assert junk["stat_id"] is None and junk["odds_american"] is None
+    assert junk["minutes_to_tip"] is None and junk["home_team"] is None
+
+
+def test_oddsapi_rows_preserve_signs_and_books():
+    env = {"request_id": "rid2", "provider": "oddsapi", "slot": "close@1830",
+           "captured_at_utc": "2026-10-22T01:40:00Z", "payload": load_fixture("oddsapi_odds.json")}
+    rows, schema = flatten.flatten(env)
+    assert schema is flatten.ODDSAPI_SCHEMA and len(rows) == 6
+    spreads = {r["outcome_name"]: (r["point"], r["price_american"]) for r in rows if r["market_key"] == "spreads"}
+    assert spreads == {"Los Angeles Lakers": (-3.5, -110.0), "Boston Celtics": (3.5, -110.0)}
+    assert {r["bookmaker_key"] for r in rows} == {"betrivers", "fanatics"}
+    assert rows[0]["minutes_to_tip"] == 20.0 and rows[0]["point"] is None   # h2h has no point
+
+
+def test_flattened_rows_write_to_parquet(tmp_path):
+    rows, schema = flatten.flatten(sgo_env())
+    store.write_parquet(tmp_path / "x.parquet", rows, schema)
+    table = pq.read_table(tmp_path / "x.parquet")
+    assert table.num_rows == 5 and table.schema.equals(flatten.SGO_SCHEMA)

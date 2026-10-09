@@ -1,0 +1,6 @@
+[
+  {"id": "OA1", "sport_key": "basketball_nba", "commence_time": "2026-10-22T02:00:00Z",
+   "home_team": "Los Angeles Lakers", "away_team": "Boston Celtics"},
+  {"id": "OA2", "sport_key": "basketball_nba", "commence_time": "2026-10-21T23:30:00Z",
+   "home_team": "New York Knicks", "away_team": "Cleveland Cavaliers"}
+]
