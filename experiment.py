@@ -88,7 +88,7 @@ MODEL_SPECS = [
 
 ENSEMBLE_WEIGHTS = "inverse_rmse"
 
-EXTRA_FEATURE_EXCLUSIONS: list[str] = ["home_team_net_fgm_r5", "away_team_net_fgm_r5", "home_team_net_fga_r5", "away_team_net_fga_r5"]
+EXTRA_FEATURE_EXCLUSIONS: list[str] = ["home_team_net_fgm_r5", "away_team_net_fgm_r5", "home_team_net_fga_r5", "away_team_net_fga_r5", "spread_signed", "is_home_favorite"]
 EXTRA_FEATURE_INCLUSIONS: list[str] = []
 
 PYTH_EXPONENT = 16.5          # Oliver Pythagorean exponent (Basketball on Paper)
