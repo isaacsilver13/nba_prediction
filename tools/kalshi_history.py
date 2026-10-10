@@ -75,9 +75,9 @@ def candle_rows(m, hours):
     return rows or [[m["ticker"], tip] + [""] * 6]  # marker row: fetched, no candles
 
 
-def pull_candles(series, hours):
+def pull_candles(series, hours, name="pregame"):
     markets = [json.loads(line) for line in open(OUT / f"{series}_markets.jsonl")]
-    path = OUT / f"{series}_pregame.csv"
+    path = OUT / f"{series}_{name}.csv"
     done = set()
     if path.exists():
         seen = list(dict.fromkeys(r["ticker"] for r in csv.DictReader(open(path))))
@@ -102,6 +102,7 @@ if __name__ == "__main__":
     ap.add_argument("series", nargs="+")
     ap.add_argument("--candles", action="store_true", help="also pull hourly candles before tip")
     ap.add_argument("--hours", type=int, default=6, help="hours of candles before tip (default 6)")
+    ap.add_argument("--name", default="pregame", help="candle file is <SERIES>_<name>.csv (use e.g. 'early48' with --hours 48)")
     ap.add_argument("--skip-markets", action="store_true", help="reuse existing <SERIES>_markets.jsonl")
     a = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
@@ -109,4 +110,4 @@ if __name__ == "__main__":
         if not (a.skip_markets and (OUT / f"{s}_markets.jsonl").exists()):
             pull_markets(s)
         if a.candles:
-            pull_candles(s, a.hours)
+            pull_candles(s, a.hours, a.name)

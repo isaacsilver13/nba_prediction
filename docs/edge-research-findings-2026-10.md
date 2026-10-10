@@ -9,6 +9,7 @@ closing spread. Question for both: is there an exploitable edge, measured by CLV
 |---|---|
 | Does the model beat the moneyline **close**? | No. Encompassing slope 0.01 (se 0.09). |
 | Does it beat **earlier** moneyline prices (CLV)? | **Yes, robustly.** Betting EV>3% at the game-day ~10am ET price: mean CLV +1.4% (se 0.26%); at the overnight open +4.3% (se 0.36%). Survives removing every closing-line/same-day feature; an Elo-only placebo loses. |
+| Does a simple points model beat Kalshi **early** (3–24h before tip) prop prices? | **No.** Same result as pre-tip: encompassing slope −0.05 to +0.10, all n.s.; taker ROI −6% to −18%. See Spike 3. |
 | Does a simple points model beat Kalshi pre-tip prop prices? | **No.** Kalshi's pre-tip mid is well calibrated and better than the model (Brier 0.169 vs 0.175); encompassing slope +0.008 (se 0.058); taker ROI −7% to −12% after fees. |
 
 **Recommendation**
@@ -24,10 +25,7 @@ closing spread. Question for both: is there an exploitable edge, measured by CLV
   teammate-out adjustment is close to what the market already prices. The market beats it, and fees plus the ~3¢
   regular-season spread remove any margin. A fuller model would mostly need *faster information* (late scratches,
   minutes restrictions), not better modeling.
-- **Optional cheap follow-up spike:** test the same points model against Kalshi's *early* prop prices (markets open
-  ~1–2 days before tip). This mirrors the moneyline finding that edge lives early. The data is free:
-  `tools/kalshi_history.py KXNBAPTS --candles --hours 48`. It costs about 1.5 h of pulling; no new code beyond a
-  longer window.
+- **Done (Spike 3): early Kalshi prop prices.** Same answer as pre-tip: no edge. Props stay closed.
 
 ---
 
@@ -183,3 +181,39 @@ Reproduce:
 
 - `python tools/kalshi_history.py KXNBAPTS --candles` (~1.5 h at 8 req/s; resumable).
 - The scratch scripts `prop_model.py` and `prop_eval.py` are throwaway. Their logic is summarized above.
+
+---
+
+## Spike 3: points model vs EARLY Kalshi prop prices (KXNBAPTS, 2025-26)
+
+Question: the moneyline edge lives early, so does the same points model beat Kalshi's prop prices 3-24h before tip?
+
+**Setup.** Hourly candles for the 48h before tip (23,562 markets). For each rung, the entry quote is the last two-sided
+candle ending at least *h* hours before tip, no older than 3h, spread ≤ 10¢; the "close" is the same pre-tip quote
+used in Spike 2. Model: the frozen Spike 2 projection **without** the teammate-absence adjustment (`mu_noadj`),
+because absences are only known game-day. Rungs are the 17,311 from Spike 2 that have an early quote. SEs are
+clustered by game.
+
+| Entry | rungs / games | median spread | Brier early mid / model | encompassing slope | taker ROI, edge>3¢ | blanket NO |
+|---|---|---|---|---|---|---|
+| 24h | 3,549 / 148 | 3¢ | 0.1625 / 0.1705 | −0.046 (se 0.117) | −13.3% (se 5.8%) | −3.1% (se 2.3%) |
+| 12h | 9,490 / 692 | 4¢ | 0.1688 / 0.1736 | +0.096 (se 0.079) | −6.4% (se 3.6%) | −4.5% (se 1.4%) |
+| 6h | 11,699 / 864 | 4¢ | 0.1711 / 0.1763 | +0.063 (se 0.067) | −9.3% (se 2.8%) | −3.5% (se 1.3%) |
+| 3h | 13,305 / 923 | 3¢ | 0.1721 / 0.1777 | +0.046 (se 0.063) | −8.6% (se 2.7%) | −3.5% (se 1.2%) |
+
+- **Prices do drift toward the model, but not enough to trade.** Regressing the move to the close on the model-vs-early
+  gap gives slope +0.063 (se 0.016) at 24h, +0.071 (0.009) at 12h, +0.038 (0.007) at 6h. The sign is right, but the
+  mean absolute move is only ~2¢ and the round trip costs ~1.5-2¢ of half-spread plus ~1.7¢ of fee near 50¢.
+- **CLV net of cost is negative everywhere:** valuing the position at the close mid against entry cost including fee
+  gives −5.7% to −9.5% per $ for every edge threshold and horizon.
+- **Early quotes are not softer than late ones.** Early-mid Brier is within 0.002 of the close-mid Brier and the
+  model is 0.005-0.008 worse at every horizon. Spreads are no tighter early (3-4¢).
+- **Caveats.** The 24h sample is only 148 games (illiquid early); intervals are wide there. The model has no game-day
+  information by construction. One season.
+
+**Verdict: no-go on a prop model against Kalshi at any horizon.** A prop edge, if any, would need information the
+market lacks (late scratches, minutes restrictions), not a better minutes × rate model.
+
+Reproduce: `python tools/kalshi_history.py KXNBAPTS --candles --hours 48 --name early48 --skip-markets` (~1.7 h at the
+rate limit; resumable; writes `KXNBAPTS_early48.csv`). The evaluation script `prop_eval_early.py` is throwaway;
+its logic is summarized above.
